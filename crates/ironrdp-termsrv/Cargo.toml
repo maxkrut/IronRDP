@@ -29,6 +29,7 @@ ironrdp-core = { version = "0.3.0", path = "../ironrdp-core" }
 ironrdp-displaycontrol = { version = "0.9.0", path = "../ironrdp-displaycontrol" }
 ironrdp-dvc = { version = "0.9.0", path = "../ironrdp-dvc" }
 ironrdp-svc = { version = "0.9.0", path = "../ironrdp-svc" }
+ironrdp-rdpecam = { version = "0.0.0", path = "../ironrdp-rdpecam" }
 
 [target.'cfg(windows)'.dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

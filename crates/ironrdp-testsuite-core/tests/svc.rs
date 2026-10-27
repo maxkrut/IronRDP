@@ -4,7 +4,8 @@ use ironrdp_pdu::mcs;
 use ironrdp_pdu::rdp::headers::ShareControlHeader;
 use ironrdp_pdu::rdp::vc::{ChannelControlFlags, ChannelPduHeader};
 use ironrdp_pdu::x224::X224;
-use ironrdp_session::{ActiveStageBuilder, x224::Processor};
+use ironrdp_session::ActiveStageBuilder;
+use ironrdp_session::x224::Processor;
 use ironrdp_svc::{
     CHANNEL_CHUNK_LENGTH, ChannelFlags, MAX_CHANNEL_CHUNK_LENGTH, MAX_STATIC_CHANNELS, StaticChannelKey,
     StaticChannelSet, StaticVirtualChannel, SvcClientProcessor, SvcMessage, SvcProcessor, SvcServerProcessor,
@@ -93,6 +94,94 @@ fn channel_chunk(data: &[u8], length: u32, flags: ChannelControlFlags) -> Vec<u8
     let mut chunk = encode_vec(&ChannelPduHeader { length, flags }).expect("channel header should encode");
     chunk.extend_from_slice(data);
     chunk
+}
+
+#[derive(Debug)]
+struct LimitedChannel;
+
+ironrdp_core::impl_as_any!(LimitedChannel);
+
+impl SvcProcessor for LimitedChannel {
+    fn channel_name(&self) -> ChannelName {
+        ChannelName::from_static(b"limited\0")
+    }
+
+    fn maximum_message_size(&self) -> usize {
+        8
+    }
+
+    fn process(&mut self, payload: &[u8]) -> ironrdp_pdu::PduResult<Vec<SvcMessage>> {
+        Ok(vec![SvcMessage::from(payload.to_vec())])
+    }
+}
+
+// oracle: regression static reassembly must reject fragment growth beyond its processor's limit before LAST.
+#[test]
+fn static_reassembly_limits_accumulated_fragments_and_recovers_after_rejection() {
+    let mut channel = StaticVirtualChannel::new(LimitedChannel);
+    let compressed = ChannelControlFlags::PACKET_COMPRESSED;
+    channel
+        .process(&channel_chunk(b"1234", 8, compressed | ChannelControlFlags::FLAG_FIRST))
+        .unwrap();
+    channel.process(&channel_chunk(b"5678", 8, compressed)).unwrap();
+    assert!(
+        channel.process(&channel_chunk(b"9", 8, compressed)).is_err(),
+        "fragment growth exceeded the opted-in limit without LAST"
+    );
+    let reply = channel
+        .process(&channel_chunk(
+            b"fresh",
+            5,
+            ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST,
+        ))
+        .unwrap();
+    assert_eq!(reply.len(), 1);
+    assert_eq!(reply[0].encode_unframed_pdu().unwrap(), b"fresh");
+}
+
+// oracle: regression static message limits apply before any copy, including compressed or unfragmented input.
+#[rstest::rstest]
+#[case::first(ChannelControlFlags::FLAG_FIRST)]
+#[case::single(ChannelControlFlags::FLAG_FIRST | ChannelControlFlags::FLAG_LAST)]
+#[case::unflagged(ChannelControlFlags::empty())]
+fn static_reassembly_limits_the_first_payload_copy(#[case] flags: ChannelControlFlags) {
+    let mut channel = StaticVirtualChannel::new(LimitedChannel);
+    assert!(
+        channel
+            .process(&channel_chunk(
+                b"123456789",
+                8,
+                flags | ChannelControlFlags::PACKET_COMPRESSED
+            ))
+            .is_err()
+    );
+}
+
+// oracle: regression the processor's message limit is inclusive, not a cap on individual fragment size.
+#[test]
+fn static_reassembly_accepts_a_fragmented_message_at_the_limit() {
+    let mut channel = StaticVirtualChannel::new(LimitedChannel);
+    channel
+        .process(&channel_chunk(b"1234", 8, ChannelControlFlags::FLAG_FIRST))
+        .unwrap();
+    let reply = channel
+        .process(&channel_chunk(b"5678", 8, ChannelControlFlags::FLAG_LAST))
+        .unwrap();
+    assert_eq!(reply.len(), 1);
+    assert_eq!(reply[0].encode_unframed_pdu().unwrap(), b"12345678");
+}
+
+// oracle: regression processors that do not opt into a message limit retain their existing reassembly behavior.
+#[test]
+fn static_reassembly_has_no_new_limit_by_default() {
+    let mut channel = StaticVirtualChannel::new(RuntimeChannel::new("default", ChannelOptions::empty()));
+    channel
+        .process(&channel_chunk(
+            b"start",
+            1024 * 1024 * 1024,
+            ChannelControlFlags::FLAG_FIRST,
+        ))
+        .unwrap();
 }
 
 #[test]

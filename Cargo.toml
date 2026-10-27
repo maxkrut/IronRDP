@@ -206,6 +206,9 @@ opt-level = 3
 opt-level = 3
 
 [patch.crates-io]
+# Windows Kerberos mechListMIC interoperability, pending an sspi release.
+# Use the locked picky-krb 0.13.0; 0.13.1 changes AuthPack incompatibly.
+sspi = { git = "https://github.com/Devolutions/sspi-rs", rev = "08d862279488dcdd0030050d7047bef85686a57a" }
 # FIXME: We need to catch up with Diplomat upstream again, but this is a significant amount of work.
 # In the meantime, we use this forked version which fixes an undefined behavior in the code expanded by the bridge macro.
 diplomat = { git = "https://github.com/CBenoit/diplomat", rev = "6dc806e80162b6b39509a04a2835744236cd2396" }

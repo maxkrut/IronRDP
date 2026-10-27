@@ -12,8 +12,8 @@ use ironrdp_pdu::nego::SecurityProtocol;
 use ironrdp_pdu::rdp::client_info::PasswordCookie;
 use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{MAX_STATIC_CHANNELS, StaticChannelKey, StaticChannelSet, SvcServerProcessor};
-use pdu::rdp::capability_sets::CapabilitySet;
-use pdu::rdp::client_info::{ClientAutoReconnect, Credentials};
+use pdu::rdp::capability_sets::{CapabilitySet, Rail, RailSupportLevel, WindowList, WindowSupportLevel};
+use pdu::rdp::client_info::{ClientAutoReconnect, ClientInfoFlags, Credentials};
 use pdu::rdp::headers::ShareControlPdu;
 use pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use pdu::rdp::server_license::{LicensePdu, LicensingErrorMessage};
@@ -22,7 +22,7 @@ use rand::RngCore as _;
 use tracing::{debug, warn};
 
 use super::channel_connection::ChannelConnectionSequence;
-use super::finalization::FinalizationSequence;
+use super::finalization::{FinalizationSequence, InputEventBuffer};
 use crate::util::{self, wrap_share_data};
 
 const IO_CHANNEL_ID: u16 = 1003;
@@ -132,10 +132,14 @@ pub struct Acceptor {
     routing_token: Option<String>,
     client_cluster_data: Option<gcc::ClientClusterData>,
     password_cookie: Option<PasswordCookie>,
+    client_info_flags: Option<ClientInfoFlags>,
+    remote_app_capabilities: Option<RemoteAppCapabilities>,
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
+    pending_input_events: InputEventBuffer,
     saved_for_reactivation: AcceptorState,
     pub(crate) creds: Option<Credentials>,
+    pub(crate) credssp_backend: crate::CredsspBackend,
     received_credentials: Option<ReceivedCredentials>,
     credentials_handled: bool,
     received_auto_reconnect: Option<ClientAutoReconnect>,
@@ -257,6 +261,35 @@ pub struct ReceivedCredentials {
     /// Down-level names separate the account name and optional NetBIOS domain.
     pub credentials: Credentials,
     pub origin: CredentialOrigin,
+}
+
+/// Remote Programs and Window List capabilities negotiated together for RemoteApp.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteAppCapabilities {
+    pub rail: Rail,
+    pub window_list: WindowList,
+}
+
+impl RemoteAppCapabilities {
+    fn from_capabilities(capabilities: &[CapabilitySet]) -> Option<Self> {
+        let rail = capabilities.iter().find_map(|capability| match capability {
+            CapabilitySet::Rail(rail) => Some(rail),
+            _ => None,
+        })?;
+        let window_list = capabilities.iter().find_map(|capability| match capability {
+            CapabilitySet::WindowList(window) => Some(window),
+            _ => None,
+        })?;
+        if !rail.support_level.contains(RailSupportLevel::SUPPORTED)
+            || window_list.support_level == WindowSupportLevel::NotSupported
+        {
+            return None;
+        }
+        Some(Self {
+            rail: rail.clone(),
+            window_list: window_list.clone(),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -381,10 +414,14 @@ impl Acceptor {
             routing_token: None,
             client_cluster_data: None,
             password_cookie: None,
+            client_info_flags: None,
+            remote_app_capabilities: None,
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
+            pending_input_events: InputEventBuffer::default(),
             saved_for_reactivation: Default::default(),
             creds,
+            credssp_backend: crate::CredsspBackend::default(),
             received_credentials: None,
             credentials_handled: false,
             received_auto_reconnect: None,
@@ -448,6 +485,11 @@ impl Acceptor {
     /// [`RdpServerDisplay`]: <https://docs.rs/ironrdp-server/latest/ironrdp_server/trait.RdpServerDisplay.html>
     pub fn set_honor_client_desktop_size(&mut self, max: Option<DesktopSize>) {
         self.honor_client_desktop_size = max;
+    }
+
+    /// Selects the CredSSP authentication provider before negotiation begins.
+    pub fn set_credssp_backend(&mut self, backend: crate::CredsspBackend) {
+        self.credssp_backend = backend;
     }
 
     /// Allows ClientInfo credentials to be validated by an external logon provider.
@@ -627,10 +669,14 @@ impl Acceptor {
             routing_token: consumed.routing_token,
             client_cluster_data: consumed.client_cluster_data,
             password_cookie: consumed.password_cookie,
+            client_info_flags: consumed.client_info_flags,
+            remote_app_capabilities: None,
             server_capabilities: consumed.server_capabilities,
             static_channels,
+            pending_input_events: InputEventBuffer::default(),
             saved_for_reactivation,
             creds: consumed.creds,
+            credssp_backend: consumed.credssp_backend,
             received_credentials: consumed.received_credentials,
             credentials_handled: consumed.credentials_handled,
             received_auto_reconnect: consumed.received_auto_reconnect,
@@ -727,6 +773,16 @@ impl Acceptor {
     /// Returns credentials received during the current handshake, if any.
     pub fn received_credentials(&self) -> Option<&ReceivedCredentials> {
         self.received_credentials.as_ref()
+    }
+
+    /// Returns the received Client Info flags, preserving them across reactivation.
+    pub fn client_info_flags(&self) -> Option<ClientInfoFlags> {
+        self.client_info_flags
+    }
+
+    /// Returns the effective RemoteApp capabilities after Confirm Active.
+    pub fn remote_app_capabilities(&self) -> Option<&RemoteAppCapabilities> {
+        self.remote_app_capabilities.as_ref()
     }
 
     /// Whether credentials need handling after channel joins and ClientInfo.
@@ -1331,6 +1387,7 @@ impl Sequence for Acceptor {
                 let data = data.0;
                 let client_info: rdp::ClientInfoPdu =
                     decode(data.user_data.as_ref()).map_err(ConnectorError::decode)?;
+                self.client_info_flags = Some(client_info.client_info.flags);
 
                 let auto_reconnect = client_info
                     .client_info
@@ -1472,7 +1529,17 @@ impl Sequence for Acceptor {
                     share_control_pdu: ShareControlPdu::ServerDemandActive(rdp::capability_sets::ServerDemandActive {
                         pdu: rdp::capability_sets::DemandActive {
                             source_descriptor: "".into(),
-                            capability_sets: self.server_capabilities.clone(),
+                            capability_sets: self
+                                .server_capabilities
+                                .iter()
+                                .filter(|capability| {
+                                    !matches!(capability, CapabilitySet::Rail(_) | CapabilitySet::WindowList(_))
+                                        || self
+                                            .client_info_flags
+                                            .is_some_and(|flags| flags.contains(ClientInfoFlags::RAIL))
+                                })
+                                .cloned()
+                                .collect(),
                         },
                     }),
                 };
@@ -1539,6 +1606,12 @@ impl Sequence for Acceptor {
                 };
                 match message {
                     mcs::McsMessage::SendDataRequest(data) => {
+                        if self.reactivation && self.static_channels.get_by_channel_id(data.channel_id).is_some() {
+                            self.pending_input_events.push(input)?;
+                            self.state = prev_state;
+                            return Ok(Written::Nothing);
+                        }
+
                         // An Initiate Multitransport Response can legitimately land
                         // here: it travels on the message channel, and the client
                         // sends it (when it sends one at all) while resolving its
@@ -1580,11 +1653,39 @@ impl Sequence for Acceptor {
                             return Err(ConnectorError::general("expected client confirm active"));
                         };
 
+                        if self
+                            .client_info_flags
+                            .is_some_and(|flags| flags.contains(ClientInfoFlags::RAIL))
+                            && self.server_capabilities.iter().any(|capability| {
+                                matches!(capability, CapabilitySet::Rail(rail)
+                                    if rail.support_level.contains(RailSupportLevel::SUPPORTED))
+                            })
+                        {
+                            let server = RemoteAppCapabilities::from_capabilities(&self.server_capabilities)
+                                .ok_or_else(|| general_err!("server RemoteApp capabilities are incomplete"))?;
+                            let mut client = RemoteAppCapabilities::from_capabilities(&confirm.pdu.capability_sets)
+                                .ok_or_else(|| general_err!("client did not confirm RemoteApp capabilities"))?;
+                            if !(client.window_list.num_icon_caches <= server.window_list.num_icon_caches
+                                && client.window_list.num_icon_cache_entries
+                                    <= server.window_list.num_icon_cache_entries)
+                            {
+                                warn!(
+                                    client_caches = client.window_list.num_icon_caches,
+                                    client_entries = client.window_list.num_icon_cache_entries,
+                                    "Client exceeded RemoteApp icon-cache limits, disabling caching"
+                                );
+                                client.window_list.num_icon_caches = 0;
+                                client.window_list.num_icon_cache_entries = 0;
+                            }
+                            self.remote_app_capabilities = Some(client);
+                        }
+
                         (
                             Written::Nothing,
                             AcceptorState::ConnectionFinalization {
                                 channels: channels.clone(),
-                                finalization: FinalizationSequence::new(self.user_channel_id, self.io_channel_id),
+                                finalization: FinalizationSequence::new(self.user_channel_id, self.io_channel_id)
+                                    .with_input_events(mem::take(&mut self.pending_input_events)),
                                 client_capabilities: confirm.pdu.capability_sets,
                             },
                         )

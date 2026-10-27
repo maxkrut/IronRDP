@@ -12309,6 +12309,9 @@ impl Control {
                                 let local = tokio::task::LocalSet::new();
                                 let worker = local.run_until(async move {
                                     let client_task = tokio::task::spawn_local(client.run());
+                                    let negotiator = rpc_now_endpoint.map(|endpoint| {
+                                        tokio::task::spawn_local(async move { endpoint.keep_negotiated().await })
+                                    });
                                     let mut connection_failed = false;
                                     let mut terminal_received = false;
                                     while let Some(output) = output_receiver.recv().await {
@@ -12521,6 +12524,9 @@ impl Control {
                                             }
                                             _ => {}
                                         }
+                                    }
+                                    if let Some(negotiator) = negotiator {
+                                        negotiator.abort();
                                     }
                                     let client_task_outcome = match client_task.await {
                                         Ok(()) => ClientTaskOutcome::Completed,

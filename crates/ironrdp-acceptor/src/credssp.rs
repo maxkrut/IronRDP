@@ -3,7 +3,6 @@ use ironrdp_connector::sspi::credssp::{
     CredSspServer, CredentialsProxy, NStatusCode, ServerError, ServerMode, ServerState, TsRequest,
 };
 use ironrdp_connector::sspi::generator::{Generator, GeneratorState};
-use ironrdp_connector::sspi::negotiate::ProtocolConfig;
 use ironrdp_connector::sspi::{
     self, AuthIdentity, KerberosServerConfig, NegotiateConfig, NetworkRequest, Username, UsernameParts,
 };
@@ -13,6 +12,19 @@ use ironrdp_connector::{
 use ironrdp_core::{WriteBuf, other_err};
 use ironrdp_pdu::PduHint;
 use tracing::debug;
+
+/// Selects the authentication provider used inside CredSSP.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CredsspBackend {
+    /// Authenticates against the credentials supplied to the acceptor.
+    #[default]
+    Rust,
+    /// Uses Windows Negotiate to authenticate local and domain accounts.
+    ///
+    /// Delegated credentials still require application-specific logon authorization.
+    #[cfg(windows)]
+    Windows,
+}
 
 #[derive(Debug)]
 pub(crate) enum CredsspState {
@@ -36,12 +48,31 @@ impl PduHint for CredsspTsRequestHint {
     }
 }
 
+/// Start of an NTLM message that is not wrapped in SPNEGO ([MS-NLMP] 2.2.1.1).
+const NTLM_SIGNATURE: &[u8] = b"NTLMSSP\0";
+
+/// NTSTATUS code sent to the client in `TsRequest.errorCode` when CredSSP fails ([MS-CSSP] 2.2.1).
+///
+/// sspi derives the code from the SSPI error, which is not an NTSTATUS value.
+/// A wrong password or an unknown user is reported as STATUS_LOGON_FAILURE, as Windows does, so that the client can ask for new credentials.
+/// sspi signals them as `LogonDenied`, or as `NoCredentials` when SPNEGO finds no configured identity for the user.
+/// Other errors keep the code from sspi.
+fn client_error_code(error: &sspi::Error) -> Option<NStatusCode> {
+    match error.error_type {
+        sspi::ErrorKind::LogonDenied | sspi::ErrorKind::NoCredentials => Some(NStatusCode::LOGON_FAILURE),
+        _ => None,
+    }
+}
+
 pub type CredsspProcessGenerator<'a> =
     Generator<'a, NetworkRequest, sspi::Result<Vec<u8>>, Result<ServerState, ServerError>>;
 
 #[derive(Debug)]
 pub struct CredsspSequence<'a> {
     server: CredSspServer<CredentialsProxyImpl<'a>>,
+    /// Replaces `server` when the first client token is a bare NTLM message.
+    /// Boxed so that the futures holding a `CredsspSequence` stay small.
+    bare_ntlm_server: Option<Box<CredSspServer<CredentialsProxyImpl<'a>>>>,
     state: CredsspState,
 }
 
@@ -176,6 +207,12 @@ impl<'a> CredsspSequence<'a> {
         }
     }
 
+    /// Starts the server side of a CredSSP exchange.
+    ///
+    /// Without a Kerberos configuration, the server authenticates with NTLM, either bare or wrapped in SPNEGO as mstsc sends it.
+    /// The first client token selects which one.
+    /// A bare NTLM client may qualify the configured account name with a domain or a UPN suffix.
+    /// A SPNEGO client must send the configured username in exactly the configured form, because sspi matches it against the configured identity before the NTLM exchange completes.
     pub fn init(
         creds: &'a AuthIdentity,
         client_computer_name: ServerName,
@@ -183,31 +220,33 @@ impl<'a> CredsspSequence<'a> {
         krb_config: Option<KerberosServerConfig>,
     ) -> ConnectorResult<Self> {
         let client_computer_name = client_computer_name.into_inner();
-        let credentials = CredentialsProxyImpl::new(creds);
+        let new_server = |server_mode| {
+            CredSspServer::new(public_key.clone(), CredentialsProxyImpl::new(creds), server_mode)
+                .map_err(|e| ConnectorError::new("CredSSP", ConnectorErrorKind::Credssp(e)))
+        };
 
-        let server_mode = if let Some(krb_config) = krb_config {
-            let credssp_config: Box<dyn ProtocolConfig> = Box::new(krb_config);
-            ServerMode::Negotiate(NegotiateConfig {
-                protocol_config: credssp_config,
+        let (server, bare_ntlm_server) = if let Some(krb_config) = krb_config {
+            let server = new_server(ServerMode::Negotiate(NegotiateConfig {
+                protocol_config: Box::new(krb_config),
                 package_list: None,
                 client_computer_name,
-            })
+            }))?;
+            (server, None)
         } else {
-            let credssp_config: Box<dyn ProtocolConfig> = Box::new(sspi::ntlm::NtlmConfig::default());
-            ServerMode::Negotiate(NegotiateConfig {
-                protocol_config: credssp_config,
+            let server = new_server(ServerMode::Negotiate(NegotiateConfig {
+                protocol_config: Box::new(sspi::ntlm::NtlmConfig::default()),
                 // Restrict to NTLM when no Kerberos server config is provided.
                 // This avoids environment-dependent Kerberos negotiation.
                 package_list: Some("!kerberos,!pku2u".to_owned()),
-                client_computer_name,
-            })
+                client_computer_name: client_computer_name.clone(),
+            }))?;
+            let bare_ntlm_server = new_server(ServerMode::Ntlm(sspi::ntlm::NtlmConfig::new(client_computer_name)))?;
+            (server, Some(Box::new(bare_ntlm_server)))
         };
-
-        let server = CredSspServer::new(public_key, credentials, server_mode)
-            .map_err(|e| ConnectorError::new("CredSSP", ConnectorErrorKind::Credssp(e)))?;
 
         let sequence = Self {
             server,
+            bare_ntlm_server,
             state: CredsspState::Ongoing,
         };
 
@@ -248,6 +287,15 @@ impl<'a> CredsspSequence<'a> {
     }
 
     pub fn process_ts_request(&mut self, request: TsRequest) -> CredsspProcessGenerator<'_> {
+        if let Some(bare_ntlm_server) = self.bare_ntlm_server.take()
+            && request
+                .nego_tokens
+                .as_deref()
+                .is_some_and(|token| token.starts_with(NTLM_SIGNATURE))
+        {
+            self.server = *bare_ntlm_server;
+        }
+
         self.server.process(request)
     }
 
@@ -262,8 +310,8 @@ impl<'a> CredsspSequence<'a> {
             Err(err) => {
                 let ts_request = err.ts_request.map(|ts_request| {
                     let mut ts_request = *ts_request;
-                    if err.error.error_type == sspi::ErrorKind::LogonDenied {
-                        ts_request.error_code = Some(NStatusCode::LOGON_FAILURE);
+                    if let Some(code) = client_error_code(&err.error) {
+                        ts_request.error_code = Some(code);
                     }
                     ts_request
                 });

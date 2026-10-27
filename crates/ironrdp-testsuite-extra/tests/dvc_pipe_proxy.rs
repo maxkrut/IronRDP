@@ -170,16 +170,17 @@ async fn open_client_pipe(name: &str, unavailable_message: &str) -> NamedPipeCli
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             match ClientOptions::new().open(&pipe_path) {
-                Ok(client) => return client,
+                Ok(client) => return Ok(client),
                 Err(error) if matches!(error.raw_os_error(), Some(2 | 231)) => {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
-                Err(error) => panic!("could not open pipe client: {error}"),
+                Err(error) => return Err(error),
             }
         }
     })
     .await
     .expect(unavailable_message)
+    .expect("open DVC pipe client")
 }
 
 #[cfg(windows)]

@@ -12,16 +12,21 @@ mod channel_connection;
 mod connection;
 pub mod credssp;
 mod finalization;
+#[cfg(windows)]
+mod native_credssp;
 mod util;
 
 pub use ironrdp_connector::sspi::{AuthIdentity as CredsspAuthIdentity, UsernameParts};
 pub use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult, DesktopSize};
 use ironrdp_pdu::nego;
+use ironrdp_pdu::rdp::client_info::ClientInfoFlags;
 
 pub use self::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 pub use self::connection::{
     Acceptor, AcceptorResult, AcceptorState, CredentialOrigin, MultitransportSecurityRng, ReceivedCredentials,
+    RemoteAppCapabilities,
 };
+pub use self::credssp::CredsspBackend;
 pub use self::finalization::{FinalizationSequence, FinalizationState};
 use crate::credssp::resolve_generator;
 
@@ -41,6 +46,12 @@ where
 #[async_trait::async_trait(?Send)]
 pub trait ConnectionSetupHandler {
     async fn handle_credentials(&mut self, credentials: Option<ReceivedCredentials>) -> ConnectorResult<()>;
+
+    /// Observes Client Info before capability setup, without establishing an authenticated identity.
+    async fn handle_client_info(&mut self, flags: ClientInfoFlags) -> ConnectorResult<()> {
+        let _ = flags;
+        Ok(())
+    }
 
     async fn prepare_capability_exchange(&mut self, desktop_size: DesktopSize) -> ConnectorResult<()> {
         let _ = desktop_size;
@@ -229,6 +240,7 @@ where
     // this the first loop iteration of that fresh call would treat the
     // carried-over request as newly sent and notify the handler again.
     let mut notified = acceptor.multitransport_request().is_some();
+    let mut client_info_notified = acceptor.is_reactivation();
 
     loop {
         if let Some(result) = acceptor.get_result() {
@@ -236,6 +248,10 @@ where
         }
 
         single_sequence_step(&mut framed, acceptor, &mut buf).await?;
+        if !client_info_notified && let Some(flags) = acceptor.client_info_flags() {
+            credentials_handler.handle_client_info(flags).await?;
+            client_info_notified = true;
+        }
         if acceptor.credentials_need_handling() {
             if let Err(error) = credentials_handler
                 .handle_credentials(acceptor.received_credentials().cloned())
@@ -366,6 +382,16 @@ where
         S: FramedRead + FramedWrite,
         N: NetworkClient,
     {
+        match acceptor.credssp_backend {
+            CredsspBackend::Rust => {}
+            #[cfg(windows)]
+            CredsspBackend::Windows => {
+                let credentials = native_credssp::accept(framed, &public_key).await?;
+                acceptor.set_received_credssp_credentials(credentials);
+                return Ok(());
+            }
+        }
+
         let creds = acceptor
             .creds
             .as_ref()

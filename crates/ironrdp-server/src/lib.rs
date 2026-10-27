@@ -2,7 +2,9 @@
 #![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 #![allow(clippy::arithmetic_side_effects)] // TODO: should we enable this lint back?
 
-pub use {ironrdp_acceptor, tokio, tokio_rustls};
+pub use ironrdp_acceptor;
+pub use tokio;
+pub use tokio_rustls;
 
 mod macros;
 
@@ -64,7 +66,7 @@ pub use server::{
     CredentialValidator, Credentials, DynamicChannelFactory, ErrorInfoDisconnectHandle, ExactMatchCredentialValidator,
     IncomingConnection, NextConnection, PendingSession, PostConnectionAction, RdpServer, RdpServerHandle,
     RdpServerOptions, RdpServerSecurity, ServerEvent, ServerEventSender, ServerRedirectionHandle, SessionOutcome,
-    StaticChannelFactory, TransportTls, pick_remotefx_entropy_coder,
+    StaticChannelFactory, TransportTls, WindowingOrders, WindowingOrdersStatus, pick_remotefx_entropy_coder,
 };
 pub use sound::{RdpsndServerHandler, RdpsndServerMessage, SoundServerFactory};
 #[cfg(feature = "usb")]

@@ -41,6 +41,7 @@ pub struct BuilderDone {
     security: RdpServerSecurity,
     codecs: BitmapCodecs,
     max_request_size: u32,
+    remote_app: Option<ironrdp_acceptor::RemoteAppCapabilities>,
     handler: Box<dyn RdpServerInputHandler>,
     display: Box<dyn RdpServerDisplay>,
     static_channel_factories: Vec<Box<dyn StaticChannelFactory>>,
@@ -167,6 +168,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 connection_binder: None,
                 codecs: server_codecs_capabilities(&[]).expect("can't panic for &[]"),
                 max_request_size: RdpServerOptions::DEFAULT_MAX_REQUEST_SIZE,
+                remote_app: None,
                 #[cfg(feature = "egfx")]
                 gfx_factory: None,
                 #[cfg(feature = "usb")]
@@ -190,6 +192,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 security: self.state.security,
                 handler: self.state.handler,
                 display: Box::new(NoopDisplay),
+                remote_app: None,
                 static_channel_factories: Vec::new(),
                 dynamic_channel_factories: Vec::new(),
                 sound_factory: None,
@@ -284,6 +287,13 @@ impl RdpServerBuilder<BuilderDone> {
     /// [MultifragmentUpdate]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/01717954-716a-424d-af35-28fb2b86df89
     pub fn with_max_request_size(mut self, max_request_size: u32) -> Self {
         self.state.max_request_size = max_request_size;
+        self
+    }
+
+    /// Offers RemoteApp to requesting clients.
+    /// The embedder must provide a `rail` static channel and window-order updates.
+    pub fn with_remote_app(mut self, capabilities: Option<ironrdp_acceptor::RemoteAppCapabilities>) -> Self {
+        self.state.remote_app = capabilities;
         self
     }
 
@@ -473,6 +483,7 @@ impl RdpServerBuilder<BuilderDone> {
                 security: self.state.security,
                 codecs: self.state.codecs,
                 max_request_size: self.state.max_request_size,
+                remote_app: self.state.remote_app,
                 honor_client_desktop_size: self.state.honor_client_desktop_size,
                 connection_policy: self.state.connection_policy,
                 remotefx_quant: self.state.remotefx_quant,
