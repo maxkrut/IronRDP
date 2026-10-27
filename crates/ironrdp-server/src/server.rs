@@ -176,8 +176,14 @@ pub struct ConnectionInfo {
     pub keyboard_layout: u32,
     /// See [`ironrdp_acceptor::AcceptorResult::keyboard_type`].
     pub keyboard_type: ironrdp_pdu::gcc::KeyboardType,
+    /// See [`ironrdp_acceptor::AcceptorResult::keyboard_subtype`].
+    pub keyboard_subtype: u32,
+    /// See [`ironrdp_acceptor::AcceptorResult::keyboard_functional_keys_count`].
+    pub keyboard_functional_keys_count: u32,
     /// See [`ironrdp_acceptor::AcceptorResult::ime_file_name`].
     pub ime_file_name: String,
+    /// See [`ironrdp_acceptor::AcceptorResult::performance_flags`].
+    pub performance_flags: rdp::client_info::PerformanceFlags,
     /// The client came back with an auto-reconnect cookie the server
     /// verified, in place of its credentials.
     pub auto_reconnect: bool,
@@ -204,7 +210,10 @@ impl ConnectionInfo {
         Self {
             keyboard_layout,
             keyboard_type,
+            keyboard_subtype: 0,
+            keyboard_functional_keys_count: 0,
             ime_file_name,
+            performance_flags: rdp::client_info::PerformanceFlags::empty(),
             auto_reconnect: false,
             client_monitors: Vec::new(),
             routing_token: None,
@@ -239,6 +248,35 @@ pub trait ConnectionHandler: Send {
     /// Observes Client Info before capability exchange; these flags do not authenticate the client.
     fn on_client_info(&mut self, flags: rdp::client_info::ClientInfoFlags) -> ServerResult<()> {
         let _ = flags;
+        Ok(())
+    }
+
+    /// Observes Client Info and Client Core Data session settings before capability exchange.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "forwards Client Info and GCC Client Core Data fields together"
+    )]
+    fn on_client_session_config(
+        &mut self,
+        flags: rdp::client_info::ClientInfoFlags,
+        performance_flags: rdp::client_info::PerformanceFlags,
+        keyboard_layout: u32,
+        keyboard_type: ironrdp_pdu::gcc::KeyboardType,
+        keyboard_subtype: u32,
+        keyboard_functional_keys_count: u32,
+        ime_file_name: &str,
+        desktop_size: DesktopSize,
+    ) -> ServerResult<()> {
+        let _ = (
+            flags,
+            performance_flags,
+            keyboard_layout,
+            keyboard_type,
+            keyboard_subtype,
+            keyboard_functional_keys_count,
+            ime_file_name,
+            desktop_size,
+        );
         Ok(())
     }
 
@@ -5618,7 +5656,10 @@ impl RdpServer {
                 h.on_connection_info(&ConnectionInfo {
                     keyboard_layout: result.keyboard_layout,
                     keyboard_type: result.keyboard_type,
+                    keyboard_subtype: result.keyboard_subtype,
+                    keyboard_functional_keys_count: result.keyboard_functional_keys_count,
                     ime_file_name: result.ime_file_name.clone(),
+                    performance_flags: result.performance_flags,
                     auto_reconnect: is_auto_reconnect,
                     client_monitors: result.client_monitors,
                     routing_token: result.routing_token.clone(),
@@ -6735,6 +6776,34 @@ impl ConnectionSetupHandler for RdpServer {
             handler.on_client_info(flags)
         }) {
             result.map_err(|error| ConnectorError::custom("client info handler failed", error))?;
+        }
+        Ok(())
+    }
+
+    async fn handle_client_session_config(
+        &mut self,
+        flags: rdp::client_info::ClientInfoFlags,
+        performance_flags: rdp::client_info::PerformanceFlags,
+        keyboard_layout: u32,
+        keyboard_type: ironrdp_pdu::gcc::KeyboardType,
+        keyboard_subtype: u32,
+        keyboard_functional_keys_count: u32,
+        ime_file_name: &str,
+        desktop_size: DesktopSize,
+    ) -> Result<(), ConnectorError> {
+        if let Some(result) = with_connection_handler(self.connection_handler.as_ref(), |handler| {
+            handler.on_client_session_config(
+                flags,
+                performance_flags,
+                keyboard_layout,
+                keyboard_type,
+                keyboard_subtype,
+                keyboard_functional_keys_count,
+                ime_file_name,
+                desktop_size,
+            )
+        }) {
+            result.map_err(|error| ConnectorError::custom("client session config handler failed", error))?;
         }
         Ok(())
     }

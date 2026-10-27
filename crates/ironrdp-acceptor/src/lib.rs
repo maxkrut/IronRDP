@@ -53,6 +53,35 @@ pub trait ConnectionSetupHandler {
         Ok(())
     }
 
+    /// Observes Client Info and Client Core Data session settings before capability setup.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "forwards Client Info and GCC Client Core Data fields together"
+    )]
+    async fn handle_client_session_config(
+        &mut self,
+        flags: ClientInfoFlags,
+        performance_flags: ironrdp_pdu::rdp::client_info::PerformanceFlags,
+        keyboard_layout: u32,
+        keyboard_type: ironrdp_pdu::gcc::KeyboardType,
+        keyboard_subtype: u32,
+        keyboard_functional_keys_count: u32,
+        ime_file_name: &str,
+        desktop_size: DesktopSize,
+    ) -> ConnectorResult<()> {
+        let _ = (
+            flags,
+            performance_flags,
+            keyboard_layout,
+            keyboard_type,
+            keyboard_subtype,
+            keyboard_functional_keys_count,
+            ime_file_name,
+            desktop_size,
+        );
+        Ok(())
+    }
+
     async fn prepare_capability_exchange(&mut self, desktop_size: DesktopSize) -> ConnectorResult<()> {
         let _ = desktop_size;
         Ok(())
@@ -250,6 +279,18 @@ where
         single_sequence_step(&mut framed, acceptor, &mut buf).await?;
         if !client_info_notified && let Some(flags) = acceptor.client_info_flags() {
             credentials_handler.handle_client_info(flags).await?;
+            credentials_handler
+                .handle_client_session_config(
+                    flags,
+                    acceptor.performance_flags(),
+                    acceptor.keyboard_layout(),
+                    acceptor.keyboard_type(),
+                    acceptor.keyboard_subtype(),
+                    acceptor.keyboard_functional_keys_count(),
+                    acceptor.ime_file_name(),
+                    acceptor.desktop_size(),
+                )
+                .await?;
             client_info_notified = true;
         }
         if acceptor.credentials_need_handling() {

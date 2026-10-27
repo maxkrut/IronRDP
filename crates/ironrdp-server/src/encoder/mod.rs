@@ -786,6 +786,7 @@ struct RemoteFxHandler {
     remotefx: RfxEncoder,
     codec_id: u8,
     desktop_size: Option<DesktopSize>,
+    buffer: Vec<u8>,
 }
 
 impl RemoteFxHandler {
@@ -794,6 +795,7 @@ impl RemoteFxHandler {
             remotefx: RfxEncoder::with_quant(algo, quant),
             desktop_size: Some(desktop_size),
             codec_id,
+            buffer: Vec::new(),
         }
     }
 
@@ -804,16 +806,20 @@ impl RemoteFxHandler {
 
 impl BitmapUpdateHandler for RemoteFxHandler {
     fn handle(&mut self, bitmap: &BitmapUpdate) -> ServerResult<UpdateFragmenter> {
-        let mut buffer = vec![0; bitmap.data.len()];
+        let min_len =
+            usize::from(bitmap.width.get()).div_ceil(64) * usize::from(bitmap.height.get()).div_ceil(64) * 64 * 64 * 4;
+        if self.buffer.len() < min_len {
+            self.buffer.resize(min_len, 0);
+        }
         let len = loop {
             match self
                 .remotefx
-                .encode(bitmap, buffer.as_mut_slice(), self.desktop_size.take())
+                .encode(bitmap, self.buffer.as_mut_slice(), self.desktop_size.take())
             {
                 Err(e) => match e.kind() {
                     ironrdp_core::EncodeErrorKind::NotEnoughBytes { .. } => {
-                        buffer.resize(buffer.len() * 2, 0);
-                        debug!("encoder buffer resized to: {}", buffer.len() * 2);
+                        self.buffer.resize(self.buffer.len() * 2, 0);
+                        debug!("encoder buffer resized to: {}", self.buffer.len());
                     }
                     _ => return Err(ServerError::encode(e)).with_context("RemoteFX encode error"),
                 },
@@ -821,7 +827,7 @@ impl BitmapUpdateHandler for RemoteFxHandler {
             }
         };
 
-        set_surface(bitmap, self.codec_id, &buffer[..len])
+        set_surface(bitmap, self.codec_id, &self.buffer[..len])
     }
 }
 

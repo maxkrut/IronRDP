@@ -13,7 +13,7 @@ use ironrdp_pdu::rdp::client_info::PasswordCookie;
 use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{MAX_STATIC_CHANNELS, StaticChannelKey, StaticChannelSet, SvcServerProcessor};
 use pdu::rdp::capability_sets::{CapabilitySet, Rail, RailSupportLevel, WindowList, WindowSupportLevel};
-use pdu::rdp::client_info::{ClientAutoReconnect, ClientInfoFlags, Credentials};
+use pdu::rdp::client_info::{ClientAutoReconnect, ClientInfoFlags, Credentials, PerformanceFlags};
 use pdu::rdp::headers::ShareControlPdu;
 use pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use pdu::rdp::server_license::{LicensePdu, LicensingErrorMessage};
@@ -120,6 +120,8 @@ pub struct Acceptor {
     desktop_size: DesktopSize,
     keyboard_layout: u32,
     keyboard_type: gcc::KeyboardType,
+    keyboard_subtype: u32,
+    keyboard_functional_keys_count: u32,
     ime_file_name: String,
     /// The client's MultiTransportChannelData block flags (MS-RDPBCGR
     /// 2.2.1.3.8), when it sent one. `None` when the client did not send the
@@ -133,6 +135,7 @@ pub struct Acceptor {
     client_cluster_data: Option<gcc::ClientClusterData>,
     password_cookie: Option<PasswordCookie>,
     client_info_flags: Option<ClientInfoFlags>,
+    performance_flags: PerformanceFlags,
     remote_app_capabilities: Option<RemoteAppCapabilities>,
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
@@ -322,11 +325,20 @@ pub struct AcceptorResult {
     /// documented values, so it doubles as "unset" the same way `keyboard_layout`'s
     /// `0` does).
     pub keyboard_type: gcc::KeyboardType,
+    /// Keyboard subtype announced by the client in its GCC Client Core Data
+    /// (section 2.2.1.3.2, `keyboardSubType`).
+    pub keyboard_subtype: u32,
+    /// Number of function keys announced by the client in its GCC Client Core
+    /// Data (section 2.2.1.3.2, `keyboardFunctionKey`).
+    pub keyboard_functional_keys_count: u32,
     /// Input method editor file name announced by the client in its GCC Client Core
     /// Data (section 2.2.1.3.2, `imeFileName`).
     ///
     /// Populated for East Asian IME-based input locales; empty otherwise.
     pub ime_file_name: String,
+    /// Desktop shell performance flags requested by the client in its Extended
+    /// Client Info PDU (section 2.2.1.11.1.1.1, `performanceFlags`).
+    pub performance_flags: PerformanceFlags,
     /// Early capability flags announced by the client in its GCC Client Core
     /// Data (section 2.2.1.3.2, `earlyCapabilityFlags`).
     ///
@@ -407,6 +419,8 @@ impl Acceptor {
             desktop_size,
             keyboard_layout: 0,
             keyboard_type: gcc::KeyboardType(0),
+            keyboard_subtype: 0,
+            keyboard_functional_keys_count: 0,
             ime_file_name: String::new(),
             multitransport_flags: None,
             early_capability_flags: gcc::ClientEarlyCapabilityFlags::empty(),
@@ -415,6 +429,7 @@ impl Acceptor {
             client_cluster_data: None,
             password_cookie: None,
             client_info_flags: None,
+            performance_flags: PerformanceFlags::empty(),
             remote_app_capabilities: None,
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
@@ -662,6 +677,8 @@ impl Acceptor {
             desktop_size,
             keyboard_layout: consumed.keyboard_layout,
             keyboard_type: consumed.keyboard_type,
+            keyboard_subtype: consumed.keyboard_subtype,
+            keyboard_functional_keys_count: consumed.keyboard_functional_keys_count,
             ime_file_name: consumed.ime_file_name,
             multitransport_flags: consumed.multitransport_flags,
             early_capability_flags: consumed.early_capability_flags,
@@ -670,6 +687,7 @@ impl Acceptor {
             client_cluster_data: consumed.client_cluster_data,
             password_cookie: consumed.password_cookie,
             client_info_flags: consumed.client_info_flags,
+            performance_flags: consumed.performance_flags,
             remote_app_capabilities: None,
             server_capabilities: consumed.server_capabilities,
             static_channels,
@@ -780,6 +798,36 @@ impl Acceptor {
         self.client_info_flags
     }
 
+    /// Returns the received Extended Client Info performance flags.
+    pub fn performance_flags(&self) -> PerformanceFlags {
+        self.performance_flags
+    }
+
+    /// Returns the client's GCC Client Core Data keyboard layout ID (KLID).
+    pub fn keyboard_layout(&self) -> u32 {
+        self.keyboard_layout
+    }
+
+    /// Returns the client's GCC Client Core Data keyboard type.
+    pub fn keyboard_type(&self) -> gcc::KeyboardType {
+        self.keyboard_type
+    }
+
+    /// Returns the client's GCC Client Core Data keyboard subtype.
+    pub fn keyboard_subtype(&self) -> u32 {
+        self.keyboard_subtype
+    }
+
+    /// Returns the client's GCC Client Core Data function-key count.
+    pub fn keyboard_functional_keys_count(&self) -> u32 {
+        self.keyboard_functional_keys_count
+    }
+
+    /// Returns the client's GCC Client Core Data IME file name.
+    pub fn ime_file_name(&self) -> &str {
+        &self.ime_file_name
+    }
+
     /// Returns the effective RemoteApp capabilities after Confirm Active.
     pub fn remote_app_capabilities(&self) -> Option<&RemoteAppCapabilities> {
         self.remote_app_capabilities.as_ref()
@@ -875,7 +923,10 @@ impl Acceptor {
                 message_channel_id: self.message_channel_id,
                 keyboard_layout: self.keyboard_layout,
                 keyboard_type: self.keyboard_type,
+                keyboard_subtype: self.keyboard_subtype,
+                keyboard_functional_keys_count: self.keyboard_functional_keys_count,
                 ime_file_name: self.ime_file_name.clone(),
+                performance_flags: self.performance_flags,
                 multitransport_flags: self
                     .multitransport_flags
                     .unwrap_or_else(gcc::MultiTransportFlags::empty),
@@ -1197,6 +1248,8 @@ impl Sequence for Acceptor {
                 self.client_cluster_data.clone_from(&gcc_blocks.cluster);
                 self.keyboard_layout = gcc_blocks.core.keyboard_layout;
                 self.keyboard_type = gcc_blocks.core.keyboard_type;
+                self.keyboard_subtype = gcc_blocks.core.keyboard_subtype;
+                self.keyboard_functional_keys_count = gcc_blocks.core.keyboard_functional_keys_count;
                 self.ime_file_name.clone_from(&gcc_blocks.core.ime_file_name);
                 self.multitransport_flags = gcc_blocks.multi_transport_channel.as_ref().map(|m| m.flags);
 
@@ -1388,6 +1441,12 @@ impl Sequence for Acceptor {
                 let client_info: rdp::ClientInfoPdu =
                     decode(data.user_data.as_ref()).map_err(ConnectorError::decode)?;
                 self.client_info_flags = Some(client_info.client_info.flags);
+                self.performance_flags = client_info
+                    .client_info
+                    .extra_info
+                    .optional_data
+                    .performance_flags()
+                    .unwrap_or_else(PerformanceFlags::empty);
 
                 let auto_reconnect = client_info
                     .client_info
