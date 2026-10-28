@@ -9,3 +9,6 @@ The PDU layouts and the client behavior follow the Windows App client (`rdclient
 The crate provides the PDU codecs and a `DvcProcessor` that negotiates the protocol version and passes server requests to a caller-supplied `VdcSwitchHandler`.
 It performs no I/O and opens no settings page itself: the handler decides what switching to the local desktop and each local action mean on the host.
 An integrating client registers the processor only when it runs in a Boot or Switch context, supplies the launch URI that advertises which local actions it supports, and delivers the returned channel messages through its session transport.
+
+Known limitation: when the server answers with a protocol version outside the range the client offers, Windows App closes the channel, but a `DvcProcessor` cannot close its own channel.
+The processor instead stays open and ignores every later PDU, so the Cloud PC's requests go unanswered until the server closes the channel.
