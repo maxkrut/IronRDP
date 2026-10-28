@@ -1,6 +1,8 @@
 //! Expected bytes and behavior come from the Windows App 2.0.1485.0 client, which is the only
 //! implementation of this channel: `msrdc/rdclientax.dll` (`VirtualDesktopControlDVC`) and
 //! `wnc/localsettingsproxyplugin.dll` (`PerformLocalActionChannel`).
+//! `crates/ironrdp-vdcswitch/PROTOCOL.md` pins those binaries by hash and locates each function an `oracle: reference`
+//! marker names, with the layout and rule it contributes.
 
 use std::sync::{Arc, Mutex};
 

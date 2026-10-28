@@ -5,6 +5,7 @@ Windows 365 Cloud PCs use it in Boot and Switch mode to send the user back to th
 
 No Microsoft Open Specification documents this channel.
 The PDU layouts and the client behavior follow the Windows App client (`rdclientax.dll` and `localsettingsproxyplugin.dll`, version 2.0.1485.0).
+`PROTOCOL.md`, next to this README in the repository, records the layouts and the binary functions each one comes from.
 
 The crate provides the PDU codecs and a `DvcProcessor` that negotiates the protocol version and passes server requests to a caller-supplied `VdcSwitchHandler`.
 It performs no I/O and opens no settings page itself: the handler decides what switching to the local desktop and each local action mean on the host.

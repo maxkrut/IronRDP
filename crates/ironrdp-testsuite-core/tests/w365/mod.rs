@@ -2,6 +2,8 @@
 //! `RDCoreSdk.dll` (`RdpScreenCaptureRedirectionClientChannel`), `msrdc/rdclientax.dll`
 //! (`RdpBatteryStatusRedirectionClientChannel`), and `wnc/powerrequestredirectionplugin.dll`
 //! (`PowerRequestRedirectionChannel`).
+//! `crates/ironrdp-w365/PROTOCOL.md` pins those binaries by hash and locates each function an `oracle: reference` marker
+//! names, with the layout and rule it contributes.
 
 mod battery;
 mod power_request;
