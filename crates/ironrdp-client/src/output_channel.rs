@@ -11,6 +11,7 @@
 //! channel a given event arrived on.
 
 use core::num::NonZeroU16;
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use ironrdp_graphics::pointer::DecodedPointer;
@@ -138,6 +139,8 @@ struct LatestSlots {
 pub struct OutputEventSender {
     must_deliver: mpsc::Sender<RdpOutputEvent>,
     latest: Arc<LatestSlots>,
+    /// Events raised from synchronous callbacks, waiting for the session loop to deliver them.
+    deferred: Arc<Mutex<VecDeque<RdpOutputEvent>>>,
 }
 
 /// Receiving half of the output-event channel.
@@ -160,6 +163,7 @@ pub fn output_channel(capacity: usize) -> (OutputEventSender, OutputEventReceive
     let sender = OutputEventSender {
         must_deliver: must_deliver_tx,
         latest: Arc::clone(&latest),
+        deferred: Arc::default(),
     };
     let receiver = OutputEventReceiver {
         must_deliver: must_deliver_rx,
@@ -199,6 +203,33 @@ impl OutputEventSender {
             Err(latest) => {
                 self.send_latest(latest);
                 Ok(true)
+            }
+        }
+    }
+
+    /// Queues `event` for [`Self::send_deferred`] without blocking or dropping it.
+    ///
+    /// For callbacks that run synchronously inside the session loop, such as dynamic channel handlers, which cannot
+    /// `.await` and must not lose a [`DropPolicy::MustDeliver`] event to a full channel.
+    /// Clones of this sender share one queue.
+    #[cfg(any(feature = "vdcswitch", feature = "w365"))]
+    pub(crate) fn defer(&self, event: RdpOutputEvent) {
+        self.deferred.lock().expect("not poisoned").push_back(event);
+    }
+
+    /// Sends every event queued by [`Self::defer`] in order, each as [`Self::send_cancellable`] would.
+    ///
+    /// Yields `Ok(false)` if `close_receiver` fires first; events not sent yet stay queued.
+    pub(crate) async fn send_deferred(
+        &self,
+        close_receiver: &mut watch::Receiver<bool>,
+    ) -> Result<bool, mpsc::error::SendError<RdpOutputEvent>> {
+        loop {
+            let Some(event) = self.deferred.lock().expect("not poisoned").pop_front() else {
+                return Ok(true);
+            };
+            if !self.send_cancellable(event, close_receiver).await? {
+                return Ok(false);
             }
         }
     }

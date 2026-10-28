@@ -1,6 +1,9 @@
+use core::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
 use ironrdp_core::encode_vec;
 use ironrdp_dvc::DvcProcessor as _;
-use ironrdp_w365::battery::{BatteryInfo, BatteryPdu, BatteryState, BatteryStatusClient};
+use ironrdp_w365::battery::{BatteryInfo, BatteryPdu, BatteryState, BatteryStatusClient, BatteryStatusHandler};
 use proptest::prelude::*;
 
 use super::{CHANNEL_ID, dvc_payloads, encoded};
@@ -11,10 +14,30 @@ const AC_80_PERCENT: BatteryInfo = BatteryInfo {
     minutes_remaining: 0,
 };
 
-fn started_client() -> BatteryStatusClient {
-    let mut client = BatteryStatusClient::new();
+const SERVER_READY: [u8; 14] = [
+    0x01, 0x00, // SERVER_READY
+    0x0E, 0x00, 0x00, 0x00, // pduLength
+    0x00, 0x00, 0x01, 0x00, // protocolVersion
+    0x00, 0x00, 0x00, 0x00, // protocolFlags
+];
+
+struct CountingHandler(Arc<AtomicUsize>);
+
+impl BatteryStatusHandler for CountingHandler {
+    fn battery_status_requested(&mut self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn started_client_counting_requests() -> (BatteryStatusClient, Arc<AtomicUsize>) {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let mut client = BatteryStatusClient::new(Box::new(CountingHandler(Arc::clone(&requests))));
     assert!(client.start(CHANNEL_ID).expect("start channel").is_empty());
-    client
+    (client, requests)
+}
+
+fn started_client() -> BatteryStatusClient {
+    started_client_counting_requests().0
 }
 
 fn info_request(state: u8, percent: u8) -> [u8; 16] {
@@ -39,14 +62,8 @@ fn request(client: &mut BatteryStatusClient, state: u8, percent: u8) -> Vec<Vec<
 #[test]
 fn server_ready_is_answered_with_a_version_1_client_ready() {
     let mut client = started_client();
-    let server_ready = [
-        0x01, 0x00, // SERVER_READY
-        0x0E, 0x00, 0x00, 0x00, // pduLength
-        0x00, 0x00, 0x01, 0x00, // protocolVersion
-        0x00, 0x00, 0x00, 0x00, // protocolFlags
-    ];
 
-    let replies = encoded(&client.process(CHANNEL_ID, &server_ready).expect("process PDU"));
+    let replies = encoded(&client.process(CHANNEL_ID, &SERVER_READY).expect("process PDU"));
 
     assert_eq!(
         replies,
@@ -58,6 +75,17 @@ fn server_ready_is_answered_with_a_version_1_client_ready() {
             0x00, 0x00, // reserved
         ]]
     );
+}
+
+// oracle: regression https://github.com/Devolutions/IronRDP/pull/2292#discussion_r4405941631
+#[test]
+fn server_ready_asks_the_handler_for_a_reading() {
+    let (mut client, requests) = started_client_counting_requests();
+    assert_eq!(requests.load(Ordering::Relaxed), 0);
+
+    client.process(CHANNEL_ID, &SERVER_READY).expect("process PDU");
+
+    assert_eq!(requests.load(Ordering::Relaxed), 1);
 }
 
 // oracle: reference Windows App 2.0.1485.0 rdclientax.dll SendBatteryInfoChangedPdu, sent only once the server requests an update

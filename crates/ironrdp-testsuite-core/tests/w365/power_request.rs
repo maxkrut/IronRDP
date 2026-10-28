@@ -80,6 +80,29 @@ fn contradictory_power_request_flags_are_ignored(#[case] flags: u8) {
     assert!(changes.lock().unwrap().is_empty());
 }
 
+// oracle: regression https://github.com/Devolutions/IronRDP/pull/2292#discussion_r4405941765
+#[test]
+fn closing_while_active_releases_the_power_requests() {
+    let (mut client, changes) = started_client();
+    client.process(CHANNEL_ID, &info_changed(0x01)).expect("process PDU");
+
+    client.close(CHANNEL_ID);
+
+    assert_eq!(*changes.lock().unwrap(), [true, false]);
+}
+
+// oracle: regression https://github.com/Devolutions/IronRDP/pull/2292#discussion_r4405941765
+#[test]
+fn closing_while_inactive_reports_nothing() {
+    let (mut client, changes) = started_client();
+    client.process(CHANNEL_ID, &info_changed(0x01)).expect("process PDU");
+    client.process(CHANNEL_ID, &info_changed(0x02)).expect("process PDU");
+
+    client.close(CHANNEL_ID);
+
+    assert_eq!(*changes.lock().unwrap(), [true, false]);
+}
+
 fn any_pdu() -> impl Strategy<Value = PowerRequestPdu> {
     prop_oneof![
         (any::<u32>(), any::<u32>()).prop_map(|(version, flags)| PowerRequestPdu::ServerReady { version, flags }),

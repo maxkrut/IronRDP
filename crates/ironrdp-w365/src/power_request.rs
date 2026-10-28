@@ -146,12 +146,15 @@ pub trait PowerRequestHandler: Send {
     /// The Cloud PC started holding power requests (`true`) or released its last one (`false`).
     ///
     /// While active, the client keeps the physical device and its display awake.
+    /// Closing the channel while active reports `false`.
     fn power_requests_changed(&mut self, active: bool);
 }
 
 /// Client processor for `Microsoft::Windows::RDS::PowerRequestRedirection`.
 pub struct PowerRequestClient {
     handler: Box<dyn PowerRequestHandler>,
+    /// Whether the handler was last told the Cloud PC holds power requests.
+    active: bool,
 }
 
 impl core::fmt::Debug for PowerRequestClient {
@@ -162,7 +165,7 @@ impl core::fmt::Debug for PowerRequestClient {
 
 impl PowerRequestClient {
     pub fn new(handler: Box<dyn PowerRequestHandler>) -> Self {
-        Self { handler }
+        Self { handler, active: false }
     }
 }
 
@@ -200,6 +203,7 @@ impl DvcProcessor for PowerRequestClient {
                     warn!(flags, "Ignoring power request flags that set both or neither state");
                 } else {
                     debug!(active, "Cloud PC power requests changed");
+                    self.active = active;
                     self.handler.power_requests_changed(active);
                 }
                 Ok(Vec::new())
@@ -208,6 +212,15 @@ impl DvcProcessor for PowerRequestClient {
                 warn!("Ignoring a client-originated power request PDU received from the server");
                 Ok(Vec::new())
             }
+        }
+    }
+
+    fn close(&mut self, _channel_id: u32) {
+        debug!("Power request channel closed");
+        // The Cloud PC can no longer release its power requests, so stop keeping the device awake for them.
+        if self.active {
+            self.active = false;
+            self.handler.power_requests_changed(false);
         }
     }
 }

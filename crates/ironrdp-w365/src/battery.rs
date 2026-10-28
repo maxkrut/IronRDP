@@ -188,9 +188,19 @@ impl<'de> Decode<'de> for BatteryPdu {
 
 impl DvcEncode for BatteryPdu {}
 
+/// Host behavior for the battery status channel.
+///
+/// The processor calls it from the session loop, so it must return promptly.
+pub trait BatteryStatusHandler: Send {
+    /// The server is ready for battery readings.
+    ///
+    /// Supply the current reading through [`BatteryStatusClient::update_battery`], then a new one whenever it changes.
+    fn battery_status_requested(&mut self);
+}
+
 /// Client processor for `Microsoft::Windows::RDS::BatteryStatusRedirection`.
-#[derive(Debug, Default)]
 pub struct BatteryStatusClient {
+    handler: Box<dyn BatteryStatusHandler>,
     channel_id: Option<u32>,
     /// Latest reading supplied by the caller.
     latest: Option<BatteryInfo>,
@@ -202,9 +212,28 @@ pub struct BatteryStatusClient {
     sent: bool,
 }
 
+impl core::fmt::Debug for BatteryStatusClient {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("BatteryStatusClient")
+            .field("channel_id", &self.channel_id)
+            .field("latest", &self.latest)
+            .field("server_view", &self.server_view)
+            .field("update_allowed", &self.update_allowed)
+            .field("sent", &self.sent)
+            .finish_non_exhaustive()
+    }
+}
+
 impl BatteryStatusClient {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(handler: Box<dyn BatteryStatusHandler>) -> Self {
+        Self {
+            handler,
+            channel_id: None,
+            latest: None,
+            server_view: None,
+            update_allowed: false,
+            sent: false,
+        }
     }
 
     /// Records a new battery reading and encodes an update when the server's pacing allows one.
@@ -271,6 +300,7 @@ impl DvcProcessor for BatteryStatusClient {
             BatteryPdu::ServerReady { version, flags } => {
                 // Windows App answers with version 1 whatever version the server announces.
                 debug!(version, flags, "Battery status server ready");
+                self.handler.battery_status_requested();
                 Ok(vec![Box::new(BatteryPdu::client_ready())])
             }
             BatteryPdu::BatteryInfoRequest(server_view) => {

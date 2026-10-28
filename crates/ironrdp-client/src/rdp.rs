@@ -69,7 +69,7 @@ use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
 #[cfg(feature = "vdcswitch")]
 use ironrdp_vdcswitch::client::{VdcSwitchClient, VdcSwitchHandler};
 #[cfg(feature = "w365")]
-use ironrdp_w365::battery::BatteryStatusClient;
+use ironrdp_w365::battery::{BatteryStatusClient, BatteryStatusHandler};
 #[cfg(feature = "w365")]
 use ironrdp_w365::power_request::{PowerRequestClient, PowerRequestHandler};
 #[cfg(feature = "w365")]
@@ -286,9 +286,15 @@ pub enum RdpOutputEvent {
     SwitchToCloudCompleted {
         hresult: u32,
     },
+    /// The battery status channel is ready: answer with an [`RdpInputEvent::BatteryStatus`] carrying the current reading.
+    ///
+    /// Raised on every new channel, including after a reconnect, because readings sent before it are dropped.
+    #[cfg(feature = "w365")]
+    BatteryStatusRequested,
     /// The Cloud PC started holding power requests (`true`) or released its last one (`false`).
     ///
     /// While active, the embedder keeps the physical device and its display awake.
+    /// Closing the channel reports `false`; the embedder also releases its wake requests when the session ends.
     #[cfg(feature = "w365")]
     PowerRequestsChanged {
         active: bool,
@@ -392,9 +398,8 @@ impl RdpOutputEvent {
 
 /// Forwards virtual desktop control requests to the embedder as output events.
 ///
-/// UNTESTED: each request reaches the embedder as a `MustDeliver` output event, because a dropped switch or
-/// settings request is a user action that silently does nothing.
-/// When changing `RdpOutputEvent::drop_policy` or this forwarding, check that these three events still fall through to `MustDeliver`.
+/// The handler runs synchronously inside the session loop, so it defers each event and the loop delivers it with
+/// backpressure: a dropped switch or settings request is a user action that silently does nothing.
 #[cfg(feature = "vdcswitch")]
 struct VdcSwitchEvents {
     output_event_sender: crate::output_channel::OutputEventSender,
@@ -403,9 +408,7 @@ struct VdcSwitchEvents {
 #[cfg(feature = "vdcswitch")]
 impl VdcSwitchEvents {
     fn emit(&self, event: RdpOutputEvent) {
-        if let Err(error) = self.output_event_sender.try_send(event) {
-            warn!(%error, "Dropping a virtual desktop control event");
-        }
+        self.output_event_sender.defer(event);
     }
 }
 
@@ -426,11 +429,11 @@ impl VdcSwitchHandler for VdcSwitchEvents {
     }
 }
 
-/// Forwards Windows 365 power request and screen capture events to the embedder as output events.
+/// Forwards Windows 365 battery, power request and screen capture events to the embedder as output events.
 ///
-/// UNTESTED: each event reaches the embedder as a `MustDeliver` output event, because a dropped power request leaves the
-/// device asleep or awake against the Cloud PC's state, and a dropped save result leaves an upload unanswered.
-/// When changing `RdpOutputEvent::drop_policy` or this forwarding, check that these events still fall through to `MustDeliver`.
+/// The handlers run synchronously inside the session loop, so they defer each event and the loop delivers it with
+/// backpressure: a dropped power request leaves the device asleep or awake against the Cloud PC's state, and a dropped
+/// save result leaves an upload unanswered.
 #[cfg(feature = "w365")]
 struct W365Events {
     output_event_sender: crate::output_channel::OutputEventSender,
@@ -439,9 +442,14 @@ struct W365Events {
 #[cfg(feature = "w365")]
 impl W365Events {
     fn emit(&self, event: RdpOutputEvent) {
-        if let Err(error) = self.output_event_sender.try_send(event) {
-            warn!(%error, "Dropping a Windows 365 redirection event");
-        }
+        self.output_event_sender.defer(event);
+    }
+}
+
+#[cfg(feature = "w365")]
+impl BatteryStatusHandler for W365Events {
+    fn battery_status_requested(&mut self) {
+        self.emit(RdpOutputEvent::BatteryStatusRequested);
     }
 }
 
@@ -653,7 +661,8 @@ pub enum RdpInputEvent {
     SwitchToCloud,
     /// Reports the physical device's battery state over the battery status channel.
     ///
-    /// Send a reading whenever it changes; the server paces how often it is forwarded.
+    /// Send one on [`RdpOutputEvent::BatteryStatusRequested`] and then whenever the reading changes; the server paces how
+    /// often it is forwarded.
     #[cfg(feature = "w365")]
     BatteryStatus(ironrdp_w365::battery::BatteryInfo),
     /// Uploads a screenshot for the Cloud PC to save.
@@ -2345,7 +2354,10 @@ fn build_connector(
     {
         // Windows App refuses the battery channel in RemoteApp sessions.
         if config.channels.battery_status && !config.connector.remote_application_mode {
-            drdynvc = drdynvc.with_dynamic_channel(BatteryStatusClient::new());
+            let handler = W365Events {
+                output_event_sender: output_event_sender.clone(),
+            };
+            drdynvc = drdynvc.with_dynamic_channel(BatteryStatusClient::new(Box::new(handler)));
         }
         if config.channels.power_request {
             let handler = W365Events {
@@ -4831,6 +4843,7 @@ async fn active_session(
                     RdpInputEvent::BatteryStatus(info) => {
                         let batch = match active_stage.get_dvc_mut::<BatteryStatusClient>() {
                             None => {
+                                // `RdpOutputEvent::BatteryStatusRequested` asks for a reading again once the channel opens.
                                 trace!("Dropping a battery reading because the battery status channel is not open");
                                 None
                             }
@@ -4869,8 +4882,10 @@ async fn active_session(
                         let event = RdpOutputEvent::ScreenCaptureUploaded {
                             capture_id: upload.as_ref().map(|(capture_id, _)| *capture_id),
                         };
-                        if let Err(error) = output_event_sender.try_send(event) {
-                            warn!(%error, "Dropping a screen capture upload event");
+                        if !send_active_output_event(output_event_sender, event, close_receiver).await? {
+                            return Ok(RdpControlFlow::TerminatedGracefully(
+                                GracefulDisconnectReason::UserInitiated,
+                            ));
                         }
                         match upload {
                             Some((_, batch)) => ActiveSessionIteration::dvc(batch),
@@ -5730,6 +5745,17 @@ async fn active_session(
                     GracefulDisconnectReason::UserInitiated,
                 ));
             }
+        }
+
+        // Events dynamic channel handlers raised during this iteration.
+        if !output_event_sender
+            .send_deferred(close_receiver)
+            .await
+            .map_err(|error| ironrdp_session::custom_err!("output_event_sender", error))?
+        {
+            return Ok(RdpControlFlow::TerminatedGracefully(
+                GracefulDisconnectReason::UserInitiated,
+            ));
         }
 
         if resize_queue.in_flight.is_none()
@@ -7509,6 +7535,45 @@ mod tests {
         let (delivered, ()) = tokio::join!(send, close);
 
         assert!(!delivered.expect("cancellation is not an output error"));
+    }
+
+    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2292#discussion_r4405941570
+    #[cfg(feature = "w365")]
+    #[tokio::test]
+    async fn deferred_events_wait_out_a_full_queue_in_order() {
+        let (output_sender, mut output_receiver) = crate::output_channel::output_channel(1);
+        output_sender
+            .try_send(RdpOutputEvent::Connected)
+            .expect("the first output event fills the queue");
+        let (_close_sender, mut close_receiver) = watch::channel(false);
+        let mut handler = W365Events {
+            output_event_sender: output_sender.clone(),
+        };
+        handler.power_requests_changed(true);
+        handler.power_requests_changed(false);
+
+        let send = output_sender.send_deferred(&mut close_receiver);
+        let receive = async {
+            let mut received = Vec::new();
+            for _ in 0..3 {
+                let event = tokio::time::timeout(Duration::from_secs(5), output_receiver.recv())
+                    .await
+                    .expect("a dropped event never arrives");
+                received.push(event.expect("output channel is open"));
+            }
+            received
+        };
+        let (delivered, received) = tokio::join!(send, receive);
+
+        assert!(delivered.expect("output channel is open"));
+        assert!(matches!(
+            received.as_slice(),
+            [
+                RdpOutputEvent::Connected,
+                RdpOutputEvent::PowerRequestsChanged { active: true },
+                RdpOutputEvent::PowerRequestsChanged { active: false },
+            ]
+        ));
     }
 
     #[cfg(all(feature = "sound", feature = "rdpdr"))]
