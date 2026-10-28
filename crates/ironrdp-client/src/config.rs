@@ -438,6 +438,13 @@ pub struct ChannelConfig {
     #[cfg(feature = "location")]
     pub location: bool,
 
+    /// Launch URI that enables the Windows 365 virtual desktop control channel.
+    ///
+    /// Windows 365 Cloud PCs use the channel in Boot and Switch mode; `None` leaves it unregistered.
+    /// The URI's query parameters advertise the local actions the client supports, such as `supportBluetoothSettings=true`.
+    #[cfg(feature = "vdcswitch")]
+    pub virtual_desktop_switch: Option<String>,
+
     /// Maximum number of simultaneous touch contacts advertised in the RDPEI `CS_READY` PDU.
     ///
     /// Defaults to [`RDPEI_MAX_TOUCH_CONTACTS`](crate::rdp::RDPEI_MAX_TOUCH_CONTACTS).
@@ -494,6 +501,8 @@ impl Default for ChannelConfig {
             webauthn: true,
             #[cfg(feature = "location")]
             location: false,
+            #[cfg(feature = "vdcswitch")]
+            virtual_desktop_switch: None,
             max_touch_contacts: crate::rdp::RDPEI_MAX_TOUCH_CONTACTS,
             #[cfg(feature = "camera")]
             cameras: crate::camera::CameraConfig::default(),
@@ -1896,6 +1905,14 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_location_redirection(mut self, enabled: bool) -> Self {
         self.channels.location = enabled;
+        self
+    }
+
+    /// Enable the Windows 365 virtual desktop control channel with the given launch URI, or disable it with `None`.
+    #[cfg(feature = "vdcswitch")]
+    #[must_use]
+    pub fn with_virtual_desktop_switch(mut self, launch_uri: Option<String>) -> Self {
+        self.channels.virtual_desktop_switch = launch_uri;
         self
     }
 

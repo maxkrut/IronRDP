@@ -862,6 +862,12 @@ impl RpcApp {
             // Only produced when the client is built with `.with_desktop_updates()`, which the
             // viewer does not opt into: it always presents full-frame `Image` snapshots instead.
             RdpOutputEvent::DesktopUpdate(_) => {}
+            // Only produced when the virtual desktop control channel is configured, which the viewer does not do.
+            RdpOutputEvent::SwitchToLocalRequested => debug!("Cloud PC requested a switch to the local desktop"),
+            RdpOutputEvent::LocalActionRequested(action) => debug!(?action, "Cloud PC requested a local action"),
+            RdpOutputEvent::SwitchToCloudCompleted { hresult } => {
+                debug!(hresult, "Cloud PC answered the switch to the cloud desktop")
+            }
         }
     }
 }

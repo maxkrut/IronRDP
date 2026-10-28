@@ -66,6 +66,8 @@ use ironrdp_session::{
 use ironrdp_svc::SvcMessage;
 use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
+#[cfg(feature = "vdcswitch")]
+use ironrdp_vdcswitch::client::{VdcSwitchClient, VdcSwitchHandler};
 use smallvec::SmallVec;
 #[cfg(feature = "gateway")]
 use tokio::io::ReadBuf;
@@ -265,6 +267,19 @@ pub enum RdpOutputEvent {
     ///
     /// [MS-RDPEI]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpei/deb1ca39-344a-467a-b9d4-dfe196b46c9d
     RdpeiInputState(RdpeiInputState),
+    /// The Cloud PC asked the client to switch the user to the local desktop.
+    ///
+    /// The client sends the Cloud PC no response; performing the switch is up to the embedder.
+    #[cfg(feature = "vdcswitch")]
+    SwitchToLocalRequested,
+    /// The Cloud PC asked the client to perform a local action on the physical device, such as opening the Bluetooth settings.
+    #[cfg(feature = "vdcswitch")]
+    LocalActionRequested(ironrdp_vdcswitch::pdu::LocalAction),
+    /// The Cloud PC answered an [`RdpInputEvent::SwitchToCloud`] request with an HRESULT.
+    #[cfg(feature = "vdcswitch")]
+    SwitchToCloudCompleted {
+        hresult: u32,
+    },
     Terminated(SessionResult<GracefulDisconnectReason>),
 }
 
@@ -348,6 +363,42 @@ impl RdpOutputEvent {
             | RdpOutputEvent::PointerBitmap(_) => DropPolicy::LatestOnly,
             _ => DropPolicy::MustDeliver,
         }
+    }
+}
+
+/// Forwards virtual desktop control requests to the embedder as output events.
+///
+/// UNTESTED: each request reaches the embedder as a `MustDeliver` output event, because a dropped switch or
+/// settings request is a user action that silently does nothing.
+/// When changing `RdpOutputEvent::drop_policy` or this forwarding, check that these three events still fall through to `MustDeliver`.
+#[cfg(feature = "vdcswitch")]
+struct VdcSwitchEvents {
+    output_event_sender: crate::output_channel::OutputEventSender,
+}
+
+#[cfg(feature = "vdcswitch")]
+impl VdcSwitchEvents {
+    fn emit(&self, event: RdpOutputEvent) {
+        if let Err(error) = self.output_event_sender.try_send(event) {
+            warn!(%error, "Dropping a virtual desktop control event");
+        }
+    }
+}
+
+#[cfg(feature = "vdcswitch")]
+impl VdcSwitchHandler for VdcSwitchEvents {
+    fn switch_to_local_requested(&mut self) -> Option<u32> {
+        // Like Windows App handing the switch to its container, the embedder performs it and the Cloud PC gets no response.
+        self.emit(RdpOutputEvent::SwitchToLocalRequested);
+        None
+    }
+
+    fn perform_local_action(&mut self, action: ironrdp_vdcswitch::pdu::LocalAction) {
+        self.emit(RdpOutputEvent::LocalActionRequested(action));
+    }
+
+    fn switch_to_cloud_completed(&mut self, hresult: u32) {
+        self.emit(RdpOutputEvent::SwitchToCloudCompleted { hresult });
     }
 }
 
@@ -536,6 +587,9 @@ pub enum RdpInputEvent {
     },
     #[cfg(feature = "location")]
     Location(LocationRequest),
+    /// Tells the Cloud PC that the user switched from the local desktop back to it.
+    #[cfg(feature = "vdcswitch")]
+    SwitchToCloud,
     /// A redirected camera was attached or removed.
     #[cfg(all(windows, feature = "camera"))]
     Camera(Box<crate::camera::CameraHotplug>),
@@ -2200,6 +2254,19 @@ fn build_connector(
     #[cfg(feature = "location")]
     if config.channels.location {
         drdynvc = drdynvc.with_dynamic_channel(LocationClient::new());
+    }
+
+    #[cfg(feature = "vdcswitch")]
+    if let Some(launch_uri) = &config.channels.virtual_desktop_switch {
+        match ironrdp_vdcswitch::pdu::LaunchUri::new(launch_uri.clone()) {
+            Ok(launch_uri) => {
+                let handler = VdcSwitchEvents {
+                    output_event_sender: output_event_sender.clone(),
+                };
+                drdynvc = drdynvc.with_dynamic_channel(VdcSwitchClient::new(launch_uri, Box::new(handler)));
+            }
+            Err(error) => warn!(%error, "Not registering the virtual desktop control channel"),
+        }
     }
 
     #[cfg(all(windows, feature = "vmconnect"))]
@@ -4647,6 +4714,25 @@ async fn active_session(
                                     }
                                 }
                             }
+                        }
+                    }
+                    #[cfg(feature = "vdcswitch")]
+                    RdpInputEvent::SwitchToCloud => {
+                        let batch = match active_stage.get_dvc::<VdcSwitchClient>() {
+                            None => {
+                                warn!("Virtual desktop control channel is not registered");
+                                None
+                            }
+                            Some(dvc) => dvc
+                                .processor()
+                                .request_switch_to_cloud()
+                                .and_then(|messages| DvcMessageBatch::try_new(dvc.channel_id(), messages))
+                                .inspect_err(|error| warn!(%error, "Unable to request a switch to the cloud desktop"))
+                                .ok(),
+                        };
+                        match batch {
+                            Some(batch) => ActiveSessionIteration::dvc(batch),
+                            None => ActiveSessionIteration::outputs(Vec::new()),
                         }
                     }
                     #[cfg(all(windows, feature = "camera"))]

@@ -2870,6 +2870,7 @@ dependencies = [
  "ironrdp-svc",
  "ironrdp-tls",
  "ironrdp-tokio",
+ "ironrdp-vdcswitch",
  "ironrdp-vmconnect",
  "picky",
  "rand 0.9.5",
@@ -3114,6 +3115,7 @@ dependencies = [
  "ironrdp-rdpeusb",
  "ironrdp-rdpsnd",
  "ironrdp-svc",
+ "ironrdp-vdcswitch",
 ]
 
 [[package]]
@@ -3620,6 +3622,7 @@ dependencies = [
  "ironrdp-svc",
  "ironrdp-tokio",
  "ironrdp-usb",
+ "ironrdp-vdcswitch",
  "openh264",
  "paste",
  "png",
@@ -3714,6 +3717,17 @@ dependencies = [
 [[package]]
 name = "ironrdp-usb"
 version = "0.1.0"
+
+[[package]]
+name = "ironrdp-vdcswitch"
+version = "0.0.0"
+dependencies = [
+ "ironrdp-core 0.3.1",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+]
 
 [[package]]
 name = "ironrdp-viewer"

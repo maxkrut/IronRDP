@@ -245,6 +245,7 @@ pub fn pdu_decode(data: &[u8]) {
 
     let _ = decode::<ironrdp_displaycontrol::pdu::DisplayControlPdu>(data);
     let _ = decode::<ironrdp_rdpel::pdu::LocationPdu>(data);
+    let _ = decode::<ironrdp_vdcswitch::pdu::VdcSwitchPdu>(data);
     let _ = decode::<ironrdp_rdpear::AuthRedirectionPdu>(data);
     let _ = decode::<ironrdp_rdpear::RemoteGuardInnerPacket<'_>>(data);
     let _ = decode::<ironrdp_rdpear::ndr::KerberosRequest>(data);
@@ -427,6 +428,9 @@ pub fn pdu_round_trip(data: &[u8]) {
     pdu_round_trip_one!(data, ironrdp_rdpear::AuthRedirectionPdu);
     pdu_round_trip_one!(data, ironrdp_rdpear::RemoteGuardInnerPacket<'_>);
     rdpear_ndr_round_trip(data);
+
+    // Virtual desktop control
+    pdu_round_trip_one!(data, ironrdp_vdcswitch::pdu::VdcSwitchPdu);
 
     // RDPSND
     pdu_round_trip_one!(data, ironrdp_rdpsnd::pdu::ServerAudioOutputPdu<'_>);
