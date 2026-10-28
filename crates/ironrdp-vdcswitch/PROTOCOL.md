@@ -28,7 +28,7 @@ The .NET assemblies were read with ILSpy.
 | `0x47E6E0` | version response handler | `Version response PDU returned an unupported version:%d)` |
 | `0x47E8F0` | `HandleSwitchToLocalRequestPDU` | `SendSwitchToLocalResponsePDU(hrResponse:0x%x) complete` |
 | `0x47EE00` | `OnSwitchToCloudPCRequest` | `OnSwitchToCloudPCRequest:Sending SwitchToCloud Request PDU` |
-| `0x47EFA0` | `PerformLocalAction` | `PerformLocalAction request recieved from Host` |
+| `0x47EFA0` | `PerformLocalAction` | `PerformSettingsAction event will be fired; container will be notified of PerformLocalAction request from Host` |
 
 ### `localsettingsproxyplugin.dll` (`PerformLocalActionChannel`)
 

@@ -117,7 +117,7 @@ Windows App's behavior when the channel closes while requests are held was not t
 | RVA | Function | Identified by |
 | --- | --- | --- |
 | `0x556640` | `OnDataReceived` | `Malformed ScreenCaptureRedirection PDU received. cbSize={}.` |
-| `0x559990` | `SendClientReadyPdu` | `Sending ScreenCaptureRedirection client-ready. protoco…` |
+| `0x559990` | `SendClientReadyPdu` | `RdpScreenCaptureRedirectionClientChannel::SendClientReadyPdu` |
 | `0x552600` | `CreateScreenCapturePdu` | `RdpScreenCaptureRedirectionClientChannel::CreateScreenCapturePdu` |
 | `0x55AFC0` | channel `UploadScreenCapture` | `CreateScreenCapturePdu failed! {}` |
 | `0x55D000` | plugin `UploadScreenCapture` | `ScreenCaptureRedirection upload rejected because client channel is unavailable. …` |
