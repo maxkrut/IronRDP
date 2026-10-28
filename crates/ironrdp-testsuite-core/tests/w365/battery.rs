@@ -77,7 +77,7 @@ fn server_ready_is_answered_with_a_version_1_client_ready() {
     );
 }
 
-// oracle: regression https://github.com/Devolutions/IronRDP/pull/2292#discussion_r4405941631
+// oracle: mutant no request for a reading when the server becomes ready (this client's choice)
 #[test]
 fn server_ready_asks_the_handler_for_a_reading() {
     let (mut client, requests) = started_client_counting_requests();

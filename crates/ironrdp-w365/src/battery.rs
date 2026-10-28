@@ -18,12 +18,11 @@ use ironrdp_pdu::{PduResult, encode_err};
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::{debug, warn};
 
-use crate::PROTOCOL_VERSION_1;
+use crate::{HEADER_SIZE, PROTOCOL_VERSION_1, decode_header};
 
 /// Dynamic virtual channel name.
 pub const CHANNEL_NAME: &str = "Microsoft::Windows::RDS::BatteryStatusRedirection";
 
-const HEADER_SIZE: usize = 2 /* PduType */ + 4 /* PduLength */;
 const SERVER_READY_SIZE: usize = 4 /* ProtocolVersion */ + 4 /* ProtocolFlags */;
 const CLIENT_READY_SIZE: usize = 4 /* ProtocolVersion */ + 4 /* ProtocolFlags */ + 2 /* Reserved */;
 const BATTERY_INFO_SIZE: usize = 4 /* BatteryState */ + 2 /* BatteryLifePercent */ + 4 /* BatteryLifeMinutes */;
@@ -153,16 +152,7 @@ impl<'de> Decode<'de> for BatteryPdu {
     ///
     /// Like Windows App, the decoder checks each PDU type against a minimum length and ignores bytes past the fields it knows.
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: HEADER_SIZE);
-        let pdu_type = src.read_u16();
-        let pdu_length = usize::try_from(src.read_u32()).unwrap_or(usize::MAX);
-        if !(HEADER_SIZE <= pdu_length && pdu_length - HEADER_SIZE <= src.len()) {
-            return Err(invalid_field_err!(
-                "pduLength",
-                "battery status PDU length does not fit its payload"
-            ));
-        }
-        let mut body = ReadCursor::new(src.read_slice(pdu_length - HEADER_SIZE));
+        let (pdu_type, mut body) = decode_header(src, Self::NAME)?;
 
         match pdu_type {
             PDU_TYPE_SERVER_READY => {
@@ -181,7 +171,7 @@ impl<'de> Decode<'de> for BatteryPdu {
             }
             PDU_TYPE_BATTERY_INFO_REQUEST => Ok(Self::BatteryInfoRequest(BatteryInfo::decode_body(&mut body)?)),
             PDU_TYPE_BATTERY_INFO_CHANGED => Ok(Self::BatteryInfoChanged(BatteryInfo::decode_body(&mut body)?)),
-            _ => Err(invalid_field_err!("pduType", "unknown battery status PDU type")),
+            _ => Err(invalid_field_err!("pduType", "unknown battery status PDU type", in: src)),
         }
     }
 }

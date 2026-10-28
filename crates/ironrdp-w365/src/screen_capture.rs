@@ -158,7 +158,8 @@ impl<'de> Decode<'de> for ScreenCapturePdu {
         if payload_length != src.len() {
             return Err(invalid_field_err!(
                 "payloadLength",
-                "screen capture PDU length does not match its payload"
+                "screen capture PDU length does not match its payload",
+                in: src
             ));
         }
         let mut payload = ReadCursor::new(src.read_slice(payload_length));
@@ -166,7 +167,7 @@ impl<'de> Decode<'de> for ScreenCapturePdu {
         match pdu_type {
             PDU_TYPE_SERVER_READY | PDU_TYPE_CLIENT_READY => {
                 if !(flags == 0 && payload_length == READY_SIZE) {
-                    return Err(invalid_field_err!("flags", "malformed screen capture ready PDU"));
+                    return Err(invalid_field_err!("flags", "malformed screen capture ready PDU", in: src));
                 }
                 let version = payload.read_u32();
                 let flags = payload.read_u32();
@@ -187,12 +188,12 @@ impl<'de> Decode<'de> for ScreenCapturePdu {
             }
             PDU_TYPE_SAVE_RESULT => {
                 if flags != 0 {
-                    return Err(invalid_field_err!("flags", "save result PDU flags are not zero"));
+                    return Err(invalid_field_err!("flags", "save result PDU flags are not zero", in: src));
                 }
                 ensure_size!(in: payload, size: SAVE_RESULT_FIXED_SIZE);
                 let capture_id = payload.read_u16();
                 if MAX_CAPTURE_ID < capture_id {
-                    return Err(invalid_field_err!("captureId", "capture ID exceeds 0x7FFF"));
+                    return Err(invalid_field_err!("captureId", "capture ID exceeds 0x7FFF", in: payload));
                 }
                 let hresult = payload.read_u32();
                 let file_name_size = usize::try_from(payload.read_u32()).unwrap_or(usize::MAX);
@@ -200,13 +201,14 @@ impl<'de> Decode<'de> for ScreenCapturePdu {
                 if file_name_size.checked_add(file_path_size) != Some(payload.len()) {
                     return Err(invalid_field_err!(
                         "fileNameLength",
-                        "save result string lengths do not match its payload"
+                        "save result string lengths do not match its payload",
+                        in: payload
                     ));
                 }
                 let file_name = decode_utf16(payload.read_slice(file_name_size))
-                    .ok_or_else(|| invalid_field_err!("fileName", "file name is not valid UTF-16"))?;
+                    .ok_or_else(|| invalid_field_err!("fileName", "file name is not valid UTF-16", in: payload))?;
                 let file_path = decode_utf16(payload.read_slice(file_path_size))
-                    .ok_or_else(|| invalid_field_err!("filePath", "file path is not valid UTF-16"))?;
+                    .ok_or_else(|| invalid_field_err!("filePath", "file path is not valid UTF-16", in: payload))?;
                 Ok(Self::SaveResult(SaveResult {
                     capture_id,
                     hresult,
@@ -214,7 +216,7 @@ impl<'de> Decode<'de> for ScreenCapturePdu {
                     file_path,
                 }))
             }
-            _ => Err(invalid_field_err!("operationType", "unknown screen capture PDU type")),
+            _ => Err(invalid_field_err!("operationType", "unknown screen capture PDU type", in: src)),
         }
     }
 }
@@ -231,8 +233,10 @@ fn decode_utf16(bytes: &[u8]) -> Option<String> {
         return None;
     }
     let units = bytes.chunks_exact(2).map(|unit| u16::from_le_bytes([unit[0], unit[1]]));
-    let text = char::decode_utf16(units).collect::<Result<String, _>>().ok()?;
-    Some(String::from(text.trim_end_matches('\0')))
+    let mut text = char::decode_utf16(units).collect::<Result<String, _>>().ok()?;
+    let trimmed_len = text.trim_end_matches('\0').len();
+    text.truncate(trimmed_len);
+    Some(text)
 }
 
 /// Host behavior for the screen capture channel.

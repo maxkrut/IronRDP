@@ -16,12 +16,11 @@ use ironrdp_dvc::{DvcClientProcessor, DvcEncode, DvcMessage, DvcProcessor};
 use ironrdp_pdu::PduResult;
 use tracing::{debug, warn};
 
-use crate::PROTOCOL_VERSION_1;
+use crate::{HEADER_SIZE, PROTOCOL_VERSION_1, decode_header};
 
 /// Dynamic virtual channel name.
 pub const CHANNEL_NAME: &str = "Microsoft::Windows::RDS::PowerRequestRedirection";
 
-const HEADER_SIZE: usize = 2 /* PduType */ + 4 /* PduLength */;
 const READY_SIZE: usize = 4 /* ProtocolVersion */ + 4 /* ProtocolFlags */;
 const FLAGS_SIZE: usize = 4 /* PowerRequestFlags */;
 
@@ -106,16 +105,7 @@ impl<'de> Decode<'de> for PowerRequestPdu {
     ///
     /// Like Windows App, the decoder checks each PDU type against a minimum length and ignores bytes past the fields it knows.
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
-        ensure_size!(in: src, size: HEADER_SIZE);
-        let pdu_type = src.read_u16();
-        let pdu_length = usize::try_from(src.read_u32()).unwrap_or(usize::MAX);
-        if !(HEADER_SIZE <= pdu_length && pdu_length - HEADER_SIZE <= src.len()) {
-            return Err(invalid_field_err!(
-                "pduLength",
-                "power request PDU length does not fit its payload"
-            ));
-        }
-        let mut body = ReadCursor::new(src.read_slice(pdu_length - HEADER_SIZE));
+        let (pdu_type, mut body) = decode_header(src, Self::NAME)?;
 
         match pdu_type {
             PDU_TYPE_SERVER_READY | PDU_TYPE_CLIENT_READY => {
@@ -132,7 +122,7 @@ impl<'de> Decode<'de> for PowerRequestPdu {
                 ensure_size!(in: body, size: FLAGS_SIZE);
                 Ok(Self::PowerRequestInfoChanged { flags: body.read_u32() })
             }
-            _ => Err(invalid_field_err!("pduType", "unknown power request PDU type")),
+            _ => Err(invalid_field_err!("pduType", "unknown power request PDU type", in: src)),
         }
     }
 }

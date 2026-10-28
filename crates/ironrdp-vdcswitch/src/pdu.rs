@@ -148,21 +148,22 @@ impl VersionRequestPdu {
         if !(2 <= uri_size && uri_size % 2 == 0) {
             return Err(invalid_field_err!(
                 "launchUriLength",
-                "launch URI length is not a null-terminated UTF-16 size"
+                "launch URI length is not a null-terminated UTF-16 size",
+                in: src
             ));
         }
         ensure_size!(in: src, size: uri_size);
         let bytes = src.read_slice(uri_size);
         let (text, terminator) = bytes.split_last_chunk::<2>().expect("uri_size is at least 2");
         if *terminator != [0, 0] {
-            return Err(invalid_field_err!("launchUri", "launch URI is not null-terminated"));
+            return Err(invalid_field_err!("launchUri", "launch URI is not null-terminated", in: src));
         }
         let units = text.chunks_exact(2).map(|unit| u16::from_le_bytes([unit[0], unit[1]]));
         let uri = char::decode_utf16(units)
             .collect::<Result<String, _>>()
-            .map_err(|_| invalid_field_err!("launchUri", "launch URI is not valid UTF-16"))?;
+            .map_err(|_| invalid_field_err!("launchUri", "launch URI is not valid UTF-16", in: src))?;
         if uri.contains('\0') {
-            return Err(invalid_field_err!("launchUri", "launch URI contains a NUL character"));
+            return Err(invalid_field_err!("launchUri", "launch URI contains a NUL character", in: src));
         }
         // The NUL check above upholds the LaunchUri invariant.
         let launch_uri = LaunchUri(uri);
@@ -262,7 +263,8 @@ impl<'de> Decode<'de> for VdcSwitchPdu {
         if !(HEADER_SIZE <= pdu_length && pdu_length - HEADER_SIZE <= src.len()) {
             return Err(invalid_field_err!(
                 "pduLength",
-                "virtual desktop control PDU length does not fit its payload"
+                "virtual desktop control PDU length does not fit its payload",
+                in: src
             ));
         }
         let mut body = ReadCursor::new(src.read_slice(pdu_length - HEADER_SIZE));
@@ -298,7 +300,8 @@ impl<'de> Decode<'de> for VdcSwitchPdu {
             _ => {
                 return Err(invalid_field_err!(
                     "pduType",
-                    "unknown virtual desktop control PDU type"
+                    "unknown virtual desktop control PDU type",
+                    in: src
                 ));
             }
         };

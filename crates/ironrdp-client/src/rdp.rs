@@ -396,78 +396,60 @@ impl RdpOutputEvent {
     }
 }
 
-/// Forwards virtual desktop control requests to the embedder as output events.
+/// Forwards virtual desktop control and Windows 365 channel events to the embedder as output events.
 ///
-/// The handler runs synchronously inside the session loop, so it defers each event and the loop delivers it with
-/// backpressure: a dropped switch or settings request is a user action that silently does nothing.
-#[cfg(feature = "vdcswitch")]
-struct VdcSwitchEvents {
+/// The handlers run synchronously inside the session loop, so they defer each event and the loop delivers it with
+/// backpressure: a dropped switch or settings request is a user action that silently does nothing, a dropped power
+/// request leaves the device asleep or awake against the Cloud PC's state, and a dropped save result leaves an upload
+/// unanswered.
+#[cfg(any(feature = "vdcswitch", feature = "w365"))]
+struct ChannelEvents {
     output_event_sender: crate::output_channel::OutputEventSender,
 }
 
 #[cfg(feature = "vdcswitch")]
-impl VdcSwitchEvents {
-    fn emit(&self, event: RdpOutputEvent) {
-        self.output_event_sender.defer(event);
-    }
-}
-
-#[cfg(feature = "vdcswitch")]
-impl VdcSwitchHandler for VdcSwitchEvents {
+impl VdcSwitchHandler for ChannelEvents {
     fn switch_to_local_requested(&mut self) -> Option<u32> {
         // Like Windows App handing the switch to its container, the embedder performs it and the Cloud PC gets no response.
-        self.emit(RdpOutputEvent::SwitchToLocalRequested);
+        self.output_event_sender.defer(RdpOutputEvent::SwitchToLocalRequested);
         None
     }
 
     fn perform_local_action(&mut self, action: ironrdp_vdcswitch::pdu::LocalAction) {
-        self.emit(RdpOutputEvent::LocalActionRequested(action));
+        self.output_event_sender
+            .defer(RdpOutputEvent::LocalActionRequested(action));
     }
 
     fn switch_to_cloud_completed(&mut self, hresult: u32) {
-        self.emit(RdpOutputEvent::SwitchToCloudCompleted { hresult });
-    }
-}
-
-/// Forwards Windows 365 battery, power request and screen capture events to the embedder as output events.
-///
-/// The handlers run synchronously inside the session loop, so they defer each event and the loop delivers it with
-/// backpressure: a dropped power request leaves the device asleep or awake against the Cloud PC's state, and a dropped
-/// save result leaves an upload unanswered.
-#[cfg(feature = "w365")]
-struct W365Events {
-    output_event_sender: crate::output_channel::OutputEventSender,
-}
-
-#[cfg(feature = "w365")]
-impl W365Events {
-    fn emit(&self, event: RdpOutputEvent) {
-        self.output_event_sender.defer(event);
+        self.output_event_sender
+            .defer(RdpOutputEvent::SwitchToCloudCompleted { hresult });
     }
 }
 
 #[cfg(feature = "w365")]
-impl BatteryStatusHandler for W365Events {
+impl BatteryStatusHandler for ChannelEvents {
     fn battery_status_requested(&mut self) {
-        self.emit(RdpOutputEvent::BatteryStatusRequested);
+        self.output_event_sender.defer(RdpOutputEvent::BatteryStatusRequested);
     }
 }
 
 #[cfg(feature = "w365")]
-impl PowerRequestHandler for W365Events {
+impl PowerRequestHandler for ChannelEvents {
     fn power_requests_changed(&mut self, active: bool) {
-        self.emit(RdpOutputEvent::PowerRequestsChanged { active });
+        self.output_event_sender
+            .defer(RdpOutputEvent::PowerRequestsChanged { active });
     }
 }
 
 #[cfg(feature = "w365")]
-impl ScreenCaptureHandler for W365Events {
+impl ScreenCaptureHandler for ChannelEvents {
     fn uploads_ready(&mut self) {
-        self.emit(RdpOutputEvent::ScreenCaptureReady);
+        self.output_event_sender.defer(RdpOutputEvent::ScreenCaptureReady);
     }
 
     fn save_completed(&mut self, result: ironrdp_w365::screen_capture::SaveResult) {
-        self.emit(RdpOutputEvent::ScreenCaptureSaved(result));
+        self.output_event_sender
+            .defer(RdpOutputEvent::ScreenCaptureSaved(result));
     }
 }
 
@@ -2337,14 +2319,18 @@ fn build_connector(
         drdynvc = drdynvc.with_dynamic_channel(LocationClient::new());
     }
 
+    #[cfg(any(feature = "vdcswitch", feature = "w365"))]
+    let channel_events = || {
+        Box::new(ChannelEvents {
+            output_event_sender: output_event_sender.clone(),
+        })
+    };
+
     #[cfg(feature = "vdcswitch")]
     if let Some(launch_uri) = &config.channels.virtual_desktop_switch {
         match ironrdp_vdcswitch::pdu::LaunchUri::new(launch_uri.clone()) {
             Ok(launch_uri) => {
-                let handler = VdcSwitchEvents {
-                    output_event_sender: output_event_sender.clone(),
-                };
-                drdynvc = drdynvc.with_dynamic_channel(VdcSwitchClient::new(launch_uri, Box::new(handler)));
+                drdynvc = drdynvc.with_dynamic_channel(VdcSwitchClient::new(launch_uri, channel_events()));
             }
             Err(error) => warn!(%error, "Not registering the virtual desktop control channel"),
         }
@@ -2354,22 +2340,13 @@ fn build_connector(
     {
         // Windows App refuses the battery channel in RemoteApp sessions.
         if config.channels.battery_status && !config.connector.remote_application_mode {
-            let handler = W365Events {
-                output_event_sender: output_event_sender.clone(),
-            };
-            drdynvc = drdynvc.with_dynamic_channel(BatteryStatusClient::new(Box::new(handler)));
+            drdynvc = drdynvc.with_dynamic_channel(BatteryStatusClient::new(channel_events()));
         }
         if config.channels.power_request {
-            let handler = W365Events {
-                output_event_sender: output_event_sender.clone(),
-            };
-            drdynvc = drdynvc.with_dynamic_channel(PowerRequestClient::new(Box::new(handler)));
+            drdynvc = drdynvc.with_dynamic_channel(PowerRequestClient::new(channel_events()));
         }
         if config.channels.screen_capture {
-            let handler = W365Events {
-                output_event_sender: output_event_sender.clone(),
-            };
-            drdynvc = drdynvc.with_dynamic_channel(ScreenCaptureClient::new(Box::new(handler)));
+            drdynvc = drdynvc.with_dynamic_channel(ScreenCaptureClient::new(channel_events()));
         }
     }
 
@@ -7537,7 +7514,7 @@ mod tests {
         assert!(!delivered.expect("cancellation is not an output error"));
     }
 
-    // oracle: regression https://github.com/Devolutions/IronRDP/pull/2292#discussion_r4405941570
+    // oracle: mutant channel handler events dropped or reordered when the output queue is full (this client's choice)
     #[cfg(feature = "w365")]
     #[tokio::test]
     async fn deferred_events_wait_out_a_full_queue_in_order() {
@@ -7546,7 +7523,7 @@ mod tests {
             .try_send(RdpOutputEvent::Connected)
             .expect("the first output event fills the queue");
         let (_close_sender, mut close_receiver) = watch::channel(false);
-        let mut handler = W365Events {
+        let mut handler = ChannelEvents {
             output_event_sender: output_sender.clone(),
         };
         handler.power_requests_changed(true);
