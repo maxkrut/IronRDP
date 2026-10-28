@@ -58,6 +58,8 @@ vmconnect = ["dep:ironrdp-vmconnect"]
 location = ["dep:ironrdp-rdpel"]
 # Windows 365 Boot and Switch virtual desktop control channel.
 vdcswitch = ["dep:ironrdp-vdcswitch"]
+# Windows 365 battery status, power request, and screen capture redirection channels.
+w365 = ["dep:ironrdp-w365"]
 # MS-RDPEVOR video optimized remoting with MS-RDPEGT geometry tracking. The channels are only
 # registered when an H.264 decoder is available: Media Foundation's on Windows by default.
 video = ["dep:ironrdp-rdpevor", "dep:ironrdp-rdpegt"]
@@ -104,6 +106,7 @@ all = [
     "vmconnect",
     "location",
     "vdcswitch",
+    "w365",
     "camera",
     "video",
     "udp",
@@ -142,6 +145,7 @@ ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.11", optional = true
 ironrdp-rdpeai = { path = "../ironrdp-rdpeai", version = "0.2", optional = true }
 ironrdp-rdpel = { path = "../ironrdp-rdpel", version = "0.0.2", optional = true }
 ironrdp-vdcswitch = { path = "../ironrdp-vdcswitch", version = "0.0.0", optional = true } # public
+ironrdp-w365 = { path = "../ironrdp-w365", version = "0.0.0", optional = true } # public
 ironrdp-rdpegt = { path = "../ironrdp-rdpegt", version = "0.2", optional = true }
 ironrdp-rdpevor = { path = "../ironrdp-rdpevor", version = "0.2", optional = true }
 ironrdp-rdpeusb = { path = "../ironrdp-rdpeusb", version = "0.2", optional = true }

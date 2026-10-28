@@ -48,3 +48,4 @@ mod str_types;
 mod svc;
 mod usb;
 mod vdcswitch;
+mod w365;

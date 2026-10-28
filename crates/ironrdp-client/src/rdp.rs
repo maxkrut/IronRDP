@@ -68,6 +68,12 @@ use ironrdp_tokio::reqwest::ReqwestNetworkClient;
 use ironrdp_tokio::{FramedWrite, single_sequence_step_read, split_tokio_framed};
 #[cfg(feature = "vdcswitch")]
 use ironrdp_vdcswitch::client::{VdcSwitchClient, VdcSwitchHandler};
+#[cfg(feature = "w365")]
+use ironrdp_w365::battery::BatteryStatusClient;
+#[cfg(feature = "w365")]
+use ironrdp_w365::power_request::{PowerRequestClient, PowerRequestHandler};
+#[cfg(feature = "w365")]
+use ironrdp_w365::screen_capture::{ScreenCaptureClient, ScreenCaptureHandler};
 use smallvec::SmallVec;
 #[cfg(feature = "gateway")]
 use tokio::io::ReadBuf;
@@ -280,6 +286,24 @@ pub enum RdpOutputEvent {
     SwitchToCloudCompleted {
         hresult: u32,
     },
+    /// The Cloud PC started holding power requests (`true`) or released its last one (`false`).
+    ///
+    /// While active, the embedder keeps the physical device and its display awake.
+    #[cfg(feature = "w365")]
+    PowerRequestsChanged {
+        active: bool,
+    },
+    /// The Cloud PC accepts screenshot uploads.
+    #[cfg(feature = "w365")]
+    ScreenCaptureReady,
+    /// An [`RdpInputEvent::UploadScreenCapture`] was queued with this capture ID, or rejected with `None`.
+    #[cfg(feature = "w365")]
+    ScreenCaptureUploaded {
+        capture_id: Option<u16>,
+    },
+    /// The Cloud PC reported where it saved an uploaded screenshot, or why it could not.
+    #[cfg(feature = "w365")]
+    ScreenCaptureSaved(ironrdp_w365::screen_capture::SaveResult),
     Terminated(SessionResult<GracefulDisconnectReason>),
 }
 
@@ -399,6 +423,43 @@ impl VdcSwitchHandler for VdcSwitchEvents {
 
     fn switch_to_cloud_completed(&mut self, hresult: u32) {
         self.emit(RdpOutputEvent::SwitchToCloudCompleted { hresult });
+    }
+}
+
+/// Forwards Windows 365 power request and screen capture events to the embedder as output events.
+///
+/// UNTESTED: each event reaches the embedder as a `MustDeliver` output event, because a dropped power request leaves the
+/// device asleep or awake against the Cloud PC's state, and a dropped save result leaves an upload unanswered.
+/// When changing `RdpOutputEvent::drop_policy` or this forwarding, check that these events still fall through to `MustDeliver`.
+#[cfg(feature = "w365")]
+struct W365Events {
+    output_event_sender: crate::output_channel::OutputEventSender,
+}
+
+#[cfg(feature = "w365")]
+impl W365Events {
+    fn emit(&self, event: RdpOutputEvent) {
+        if let Err(error) = self.output_event_sender.try_send(event) {
+            warn!(%error, "Dropping a Windows 365 redirection event");
+        }
+    }
+}
+
+#[cfg(feature = "w365")]
+impl PowerRequestHandler for W365Events {
+    fn power_requests_changed(&mut self, active: bool) {
+        self.emit(RdpOutputEvent::PowerRequestsChanged { active });
+    }
+}
+
+#[cfg(feature = "w365")]
+impl ScreenCaptureHandler for W365Events {
+    fn uploads_ready(&mut self) {
+        self.emit(RdpOutputEvent::ScreenCaptureReady);
+    }
+
+    fn save_completed(&mut self, result: ironrdp_w365::screen_capture::SaveResult) {
+        self.emit(RdpOutputEvent::ScreenCaptureSaved(result));
     }
 }
 
@@ -590,6 +651,17 @@ pub enum RdpInputEvent {
     /// Tells the Cloud PC that the user switched from the local desktop back to it.
     #[cfg(feature = "vdcswitch")]
     SwitchToCloud,
+    /// Reports the physical device's battery state over the battery status channel.
+    ///
+    /// Send a reading whenever it changes; the server paces how often it is forwarded.
+    #[cfg(feature = "w365")]
+    BatteryStatus(ironrdp_w365::battery::BatteryInfo),
+    /// Uploads a screenshot for the Cloud PC to save.
+    #[cfg(feature = "w365")]
+    UploadScreenCapture {
+        image_type: ironrdp_w365::screen_capture::ImageType,
+        image: Vec<u8>,
+    },
     /// A redirected camera was attached or removed.
     #[cfg(all(windows, feature = "camera"))]
     Camera(Box<crate::camera::CameraHotplug>),
@@ -2266,6 +2338,26 @@ fn build_connector(
                 drdynvc = drdynvc.with_dynamic_channel(VdcSwitchClient::new(launch_uri, Box::new(handler)));
             }
             Err(error) => warn!(%error, "Not registering the virtual desktop control channel"),
+        }
+    }
+
+    #[cfg(feature = "w365")]
+    {
+        // Windows App refuses the battery channel in RemoteApp sessions.
+        if config.channels.battery_status && !config.connector.remote_application_mode {
+            drdynvc = drdynvc.with_dynamic_channel(BatteryStatusClient::new());
+        }
+        if config.channels.power_request {
+            let handler = W365Events {
+                output_event_sender: output_event_sender.clone(),
+            };
+            drdynvc = drdynvc.with_dynamic_channel(PowerRequestClient::new(Box::new(handler)));
+        }
+        if config.channels.screen_capture {
+            let handler = W365Events {
+                output_event_sender: output_event_sender.clone(),
+            };
+            drdynvc = drdynvc.with_dynamic_channel(ScreenCaptureClient::new(Box::new(handler)));
         }
     }
 
@@ -4732,6 +4824,56 @@ async fn active_session(
                         };
                         match batch {
                             Some(batch) => ActiveSessionIteration::dvc(batch),
+                            None => ActiveSessionIteration::outputs(Vec::new()),
+                        }
+                    }
+                    #[cfg(feature = "w365")]
+                    RdpInputEvent::BatteryStatus(info) => {
+                        let batch = match active_stage.get_dvc_mut::<BatteryStatusClient>() {
+                            None => {
+                                trace!("Dropping a battery reading because the battery status channel is not open");
+                                None
+                            }
+                            Some(mut dvc) => {
+                                let channel_id = dvc.channel_id();
+                                dvc.processor_mut()
+                                    .update_battery(info)
+                                    .and_then(|messages| DvcMessageBatch::try_new(channel_id, messages))
+                                    .inspect_err(|error| warn!(%error, "Unable to send a battery update"))
+                                    .ok()
+                            }
+                        };
+                        match batch {
+                            Some(batch) => ActiveSessionIteration::dvc(batch),
+                            None => ActiveSessionIteration::outputs(Vec::new()),
+                        }
+                    }
+                    #[cfg(feature = "w365")]
+                    RdpInputEvent::UploadScreenCapture { image_type, image } => {
+                        let upload = match active_stage.get_dvc_mut::<ScreenCaptureClient>() {
+                            None => {
+                                warn!("Screen capture channel is not open");
+                                None
+                            }
+                            Some(mut dvc) => {
+                                let channel_id = dvc.channel_id();
+                                dvc.processor_mut()
+                                    .upload(image_type, image)
+                                    .and_then(|(capture_id, messages)| {
+                                        DvcMessageBatch::try_new(channel_id, messages).map(|batch| (capture_id, batch))
+                                    })
+                                    .inspect_err(|error| warn!(%error, "Unable to upload a screen capture"))
+                                    .ok()
+                            }
+                        };
+                        let event = RdpOutputEvent::ScreenCaptureUploaded {
+                            capture_id: upload.as_ref().map(|(capture_id, _)| *capture_id),
+                        };
+                        if let Err(error) = output_event_sender.try_send(event) {
+                            warn!(%error, "Dropping a screen capture upload event");
+                        }
+                        match upload {
+                            Some((_, batch)) => ActiveSessionIteration::dvc(batch),
                             None => ActiveSessionIteration::outputs(Vec::new()),
                         }
                     }

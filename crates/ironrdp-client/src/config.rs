@@ -445,6 +445,25 @@ pub struct ChannelConfig {
     #[cfg(feature = "vdcswitch")]
     pub virtual_desktop_switch: Option<String>,
 
+    /// Enable the Windows 365 battery status redirection channel.
+    ///
+    /// Supply readings with [`RdpInputEvent::BatteryStatus`](crate::rdp::RdpInputEvent::BatteryStatus).
+    /// Like Windows App, the client does not open the channel in RemoteApp sessions.
+    #[cfg(feature = "w365")]
+    pub battery_status: bool,
+
+    /// Enable the Windows 365 power request redirection channel.
+    ///
+    /// Changes arrive as [`RdpOutputEvent::PowerRequestsChanged`](crate::rdp::RdpOutputEvent::PowerRequestsChanged).
+    #[cfg(feature = "w365")]
+    pub power_request: bool,
+
+    /// Enable the Windows 365 screen capture redirection channel.
+    ///
+    /// Upload screenshots with [`RdpInputEvent::UploadScreenCapture`](crate::rdp::RdpInputEvent::UploadScreenCapture).
+    #[cfg(feature = "w365")]
+    pub screen_capture: bool,
+
     /// Maximum number of simultaneous touch contacts advertised in the RDPEI `CS_READY` PDU.
     ///
     /// Defaults to [`RDPEI_MAX_TOUCH_CONTACTS`](crate::rdp::RDPEI_MAX_TOUCH_CONTACTS).
@@ -503,6 +522,12 @@ impl Default for ChannelConfig {
             location: false,
             #[cfg(feature = "vdcswitch")]
             virtual_desktop_switch: None,
+            #[cfg(feature = "w365")]
+            battery_status: false,
+            #[cfg(feature = "w365")]
+            power_request: false,
+            #[cfg(feature = "w365")]
+            screen_capture: false,
             max_touch_contacts: crate::rdp::RDPEI_MAX_TOUCH_CONTACTS,
             #[cfg(feature = "camera")]
             cameras: crate::camera::CameraConfig::default(),
@@ -1913,6 +1938,30 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_virtual_desktop_switch(mut self, launch_uri: Option<String>) -> Self {
         self.channels.virtual_desktop_switch = launch_uri;
+        self
+    }
+
+    /// Enable or disable the Windows 365 battery status redirection channel.
+    #[cfg(feature = "w365")]
+    #[must_use]
+    pub fn with_battery_status_redirection(mut self, enabled: bool) -> Self {
+        self.channels.battery_status = enabled;
+        self
+    }
+
+    /// Enable or disable the Windows 365 power request redirection channel.
+    #[cfg(feature = "w365")]
+    #[must_use]
+    pub fn with_power_request_redirection(mut self, enabled: bool) -> Self {
+        self.channels.power_request = enabled;
+        self
+    }
+
+    /// Enable or disable the Windows 365 screen capture redirection channel.
+    #[cfg(feature = "w365")]
+    #[must_use]
+    pub fn with_screen_capture_redirection(mut self, enabled: bool) -> Self {
+        self.channels.screen_capture = enabled;
         self
     }
 

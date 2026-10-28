@@ -868,6 +868,11 @@ impl RpcApp {
             RdpOutputEvent::SwitchToCloudCompleted { hresult } => {
                 debug!(hresult, "Cloud PC answered the switch to the cloud desktop")
             }
+            // Only produced when the Windows 365 redirection channels are enabled, which the viewer does not do.
+            RdpOutputEvent::PowerRequestsChanged { active } => debug!(active, "Cloud PC power requests changed"),
+            RdpOutputEvent::ScreenCaptureReady => debug!("Cloud PC accepts screen capture uploads"),
+            RdpOutputEvent::ScreenCaptureUploaded { capture_id } => debug!(?capture_id, "Screen capture uploaded"),
+            RdpOutputEvent::ScreenCaptureSaved(result) => debug!(?result, "Cloud PC saved a screen capture"),
         }
     }
 }
