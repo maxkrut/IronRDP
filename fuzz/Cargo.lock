@@ -615,7 +615,7 @@ version = "0.1.0"
 
 [[package]]
 name = "ironrdp-vdcswitch"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -626,7 +626,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-w365"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
