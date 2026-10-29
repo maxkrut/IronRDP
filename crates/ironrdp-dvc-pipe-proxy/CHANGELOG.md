@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.7.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-dvc-pipe-proxy-v0.7.0...ironrdp-dvc-pipe-proxy-v0.7.1)] - 2026-10-29
+
+### <!-- 4 -->Bug Fixes
+
+- Harden channel lifecycle and pipe proxy ([#2275](https://github.com/Devolutions/IronRDP/issues/2275)) ([a28a57e4f1](https://github.com/Devolutions/IronRDP/commit/a28a57e4f1989ac16bb3d9d9296f1a7bb85147b0)) 
+
+  Emit a single `DATA` PDU for empty and 1,590-byte DVC messages instead
+  of dropping zero-length payloads or starting 1,590-byte payloads with
+  `DATA_FIRST`.
+  
+  Add `DrdynvcServer::is_ready` and
+  `DrdynvcServer::create_channel_boxed_with`, suppress `ClosePdu` for
+  pending or failed server channels, discard late in-flight data and
+  cancelled `CreateResponse` PDUs for retired channel IDs, and close only
+  the offending dynamic channel when a server processor's
+  `max_message_size` limit is exceeded.
+  
+  Add `DvcNamedPipeProxy::new_async`, cancel pending pipe writes and
+  reconnect sleeps on proxy drop without blocking the Tokio I/O driver,
+  and register client DVC pipe proxies through a channel factory with
+  async backpressure on the RDP input queue.
+  
+  ---------
+
+
+
 ## [[0.7.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-dvc-pipe-proxy-v0.6.0...ironrdp-dvc-pipe-proxy-v0.7.0)] - 2026-10-27
 
 ### <!-- 7 -->Build
