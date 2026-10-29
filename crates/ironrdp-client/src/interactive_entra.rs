@@ -666,7 +666,7 @@ mod tests {
         }
     }
 
-    // oracle: reference Windows App 2.0.1485.0 rdclientax.dll sub_1804ABD10, which reports failures as error_code
+    // oracle: reference Windows App 2.0.1485.0 rdclientax.dll InteractiveRdsAadAuthClient data handler, which reports failures as error_code
     #[test]
     fn error_message_carries_the_hresult() {
         assert_eq!(error_message(E_ACCESSDENIED), br#"{"error_code":-2147024891}"#);
