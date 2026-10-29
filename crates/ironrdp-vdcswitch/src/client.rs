@@ -32,13 +32,26 @@ pub trait VdcSwitchHandler: Send {
     fn switch_to_cloud_completed(&mut self, hresult: u32) {
         let _ = hresult;
     }
+
+    /// The server selected a protocol version outside the range the client offered.
+    ///
+    /// The channel stays unusable until the server opens it again: Windows App closes it at this point, but a dynamic
+    /// channel processor cannot close its own channel, so this one ignores all further traffic instead.
+    fn version_negotiation_failed(&mut self, version: ProtocolVersion) {
+        let _ = version;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     Closed,
-    AwaitingVersion,
-    Active(ProtocolVersion),
+    AwaitingVersion {
+        channel_id: u32,
+    },
+    Active {
+        channel_id: u32,
+        version: ProtocolVersion,
+    },
     /// The server selected a version outside the offered range.
     ///
     /// Windows App closes the channel at this point; the processor cannot close it, so it ignores all further traffic.
@@ -50,7 +63,6 @@ pub struct VdcSwitchClient {
     launch_uri: LaunchUri,
     handler: Box<dyn VdcSwitchHandler>,
     state: State,
-    channel_id: Option<u32>,
 }
 
 impl core::fmt::Debug for VdcSwitchClient {
@@ -58,7 +70,6 @@ impl core::fmt::Debug for VdcSwitchClient {
         f.debug_struct("VdcSwitchClient")
             .field("launch_uri", &self.launch_uri)
             .field("state", &self.state)
-            .field("channel_id", &self.channel_id)
             .finish_non_exhaustive()
     }
 }
@@ -70,15 +81,14 @@ impl VdcSwitchClient {
             launch_uri,
             handler,
             state: State::Closed,
-            channel_id: None,
         }
     }
 
     /// Returns the version the server selected, once negotiation has succeeded.
     pub fn negotiated_version(&self) -> Option<ProtocolVersion> {
         match self.state {
-            State::Active(version) => Some(version),
-            State::Closed | State::AwaitingVersion | State::Failed => None,
+            State::Active { version, .. } => Some(version),
+            State::Closed | State::AwaitingVersion { .. } | State::Failed => None,
         }
     }
 
@@ -86,9 +96,9 @@ impl VdcSwitchClient {
     ///
     /// Like Windows App, this needs only an open channel, not a completed version negotiation.
     pub fn request_switch_to_cloud(&self) -> PduResult<Vec<SvcMessage>> {
-        let channel_id = match (self.state, self.channel_id) {
-            (State::AwaitingVersion | State::Active(_), Some(channel_id)) => channel_id,
-            _ => {
+        let channel_id = match self.state {
+            State::AwaitingVersion { channel_id } | State::Active { channel_id, .. } => channel_id,
+            State::Closed | State::Failed => {
                 return Err(pdu_other_err!(
                     "VdcSwitchClient::request_switch_to_cloud",
                     "virtual desktop control channel is not open"
@@ -113,8 +123,7 @@ impl DvcProcessor for VdcSwitchClient {
     }
 
     fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>> {
-        self.channel_id = Some(channel_id);
-        self.state = State::AwaitingVersion;
+        self.state = State::AwaitingVersion { channel_id };
         debug!(channel_id, "Virtual desktop control channel started");
         Ok(vec![Box::new(VdcSwitchPdu::VersionRequest(VersionRequestPdu::new(
             self.launch_uri.clone(),
@@ -122,9 +131,10 @@ impl DvcProcessor for VdcSwitchClient {
     }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
-        if matches!(self.state, State::Closed | State::Failed) {
-            return Ok(Vec::new());
-        }
+        let channel_id = match self.state {
+            State::AwaitingVersion { channel_id } | State::Active { channel_id, .. } => channel_id,
+            State::Closed | State::Failed => return Ok(Vec::new()),
+        };
 
         let pdu: VdcSwitchPdu = match decode(payload) {
             Ok(pdu) => pdu,
@@ -137,7 +147,7 @@ impl DvcProcessor for VdcSwitchClient {
         match pdu {
             VdcSwitchPdu::VersionResponse { version } if version.is_supported() => {
                 debug!(version = version.0, "Virtual desktop control version negotiated");
-                self.state = State::Active(version);
+                self.state = State::Active { channel_id, version };
                 Ok(Vec::new())
             }
             VdcSwitchPdu::VersionResponse { version } => {
@@ -146,6 +156,7 @@ impl DvcProcessor for VdcSwitchClient {
                     "Server selected an unsupported virtual desktop control version"
                 );
                 self.state = State::Failed;
+                self.handler.version_negotiation_failed(version);
                 Ok(Vec::new())
             }
             VdcSwitchPdu::SwitchToLocalRequest => {
@@ -162,7 +173,7 @@ impl DvcProcessor for VdcSwitchClient {
             }
             VdcSwitchPdu::PerformLocalAction { action } => {
                 match self.state {
-                    State::Active(version) if ProtocolVersion::V2 <= version => {
+                    State::Active { version, .. } if ProtocolVersion::V2 <= version => {
                         debug!(?action, "Cloud PC requested a local action");
                         self.handler.perform_local_action(action);
                     }
@@ -183,7 +194,6 @@ impl DvcProcessor for VdcSwitchClient {
     }
 
     fn close(&mut self, _channel_id: u32) {
-        self.channel_id = None;
         self.state = State::Closed;
         debug!("Virtual desktop control channel closed");
     }

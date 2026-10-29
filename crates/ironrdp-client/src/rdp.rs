@@ -286,6 +286,12 @@ pub enum RdpOutputEvent {
     SwitchToCloudCompleted {
         hresult: u32,
     },
+    /// The Cloud PC selected an unsupported virtual desktop control version, so switch and local-action requests stop
+    /// working until it opens the channel again.
+    #[cfg(feature = "vdcswitch")]
+    VirtualDesktopSwitchUnavailable {
+        version: u32,
+    },
     /// The battery status channel is ready: answer with an [`RdpInputEvent::BatteryStatus`] carrying the current reading.
     ///
     /// Raised on every new channel, including after a reconnect, because readings sent before it are dropped.
@@ -423,6 +429,11 @@ impl VdcSwitchHandler for ChannelEvents {
     fn switch_to_cloud_completed(&mut self, hresult: u32) {
         self.output_event_sender
             .defer(RdpOutputEvent::SwitchToCloudCompleted { hresult });
+    }
+
+    fn version_negotiation_failed(&mut self, version: ironrdp_vdcswitch::pdu::ProtocolVersion) {
+        self.output_event_sender
+            .defer(RdpOutputEvent::VirtualDesktopSwitchUnavailable { version: version.0 });
     }
 }
 
@@ -1585,7 +1596,7 @@ impl RdpClient {
                     (Some(input_keepalive), Some(fake_events)) => Some(input_keepalive.min(fake_events)),
                     (input_keepalive, fake_events) => input_keepalive.or(fake_events),
                 };
-            match active_session(
+            let outcome = active_session(
                 framed,
                 connection_result,
                 udp_tunnel,
@@ -1602,8 +1613,11 @@ impl RdpClient {
                 &mut reconnect_attempt,
                 &self.input_event_sender.session_status,
             )
-            .await
-            {
+            .await;
+            // An iteration that ends the session, by terminating or failing, exits before the session loop delivers
+            // the events dynamic channel handlers raised during it. A closed output channel leaves nobody to tell.
+            let _ = self.output_event_sender.send_deferred(&mut self.close_receiver).await;
+            match outcome {
                 Ok(RdpControlFlow::ReconnectWithNewSize {
                     width,
                     height,

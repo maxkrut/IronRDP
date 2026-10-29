@@ -868,6 +868,12 @@ impl RpcApp {
             RdpOutputEvent::SwitchToCloudCompleted { hresult } => {
                 debug!(hresult, "Cloud PC answered the switch to the cloud desktop")
             }
+            RdpOutputEvent::VirtualDesktopSwitchUnavailable { version } => {
+                debug!(
+                    version,
+                    "Cloud PC selected an unsupported virtual desktop control version"
+                )
+            }
             // Only produced when the Windows 365 redirection channels are enabled, which the viewer does not do.
             RdpOutputEvent::BatteryStatusRequested => debug!("Cloud PC requested the battery status"),
             RdpOutputEvent::PowerRequestsChanged { active } => debug!(active, "Cloud PC power requests changed"),
