@@ -7,8 +7,8 @@
 - `Microsoft::Windows::RDS::ScreenCaptureRedirection` uploads a screenshot taken on the client so that the Cloud PC saves it.
 
 No Microsoft Open Specification documents these channels.
-The PDU layouts and the client behavior follow the Windows App client (`RDCoreSdk.dll`, `rdclientax.dll`, and `powerrequestredirectionplugin.dll`, version 2.0.1485.0).
-`PROTOCOL.md`, next to this README in the repository, records the layouts and the binary functions each one comes from.
+The PDU layouts and the client behavior follow the Windows App 2.0.1485.0 client.
+`PROTOCOL.md`, next to this README in the repository, describes the layouts and the client behavior.
 
 Each module provides the PDU codecs and a `DvcProcessor`.
 The crate performs no I/O: it reads no battery state, holds no power request, and captures no screen.

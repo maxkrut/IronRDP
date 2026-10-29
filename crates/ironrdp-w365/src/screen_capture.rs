@@ -1,7 +1,7 @@
 //! Screen capture redirection channel.
 //!
 //! The client uploads a screenshot taken on the physical device, and the Cloud PC saves it and reports where.
-//! See [`PROTOCOL.md`] for the layouts and the Windows App functions they come from.
+//! See [`PROTOCOL.md`] for the layouts and the client behavior.
 //!
 //! [`PROTOCOL.md`]: https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp-w365/PROTOCOL.md#screen-capture-redirection
 

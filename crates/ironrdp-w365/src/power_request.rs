@@ -1,9 +1,9 @@
 //! Power request redirection channel.
 //!
 //! The Cloud PC reports whether it currently holds power requests, and the client keeps the physical device awake while it does.
-//! Windows App answers an active report with `PowerSetRequest` for `PowerRequestSystemRequired` and `PowerRequestDisplayRequired`,
-//! and an inactive one by clearing both.
-//! See [`PROTOCOL.md`] for the layouts and the Windows App functions they come from.
+//! On Windows, an embedder can do this with `PowerSetRequest` for `PowerRequestSystemRequired` and
+//! `PowerRequestDisplayRequired`, cleared again once the Cloud PC holds none.
+//! See [`PROTOCOL.md`] for the layouts and the client behavior.
 //!
 //! [`PROTOCOL.md`]: https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp-w365/PROTOCOL.md#power-request-redirection
 

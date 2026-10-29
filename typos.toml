@@ -57,9 +57,6 @@ WEBAUTHN_COSE_CREDENTIAL_PARAMETERS = "WEBAUTHN_COSE_CREDENTIAL_PARAMETERS"
 
 [default]
 extend-ignore-re = [
-   # Hexadecimal addresses of reverse-engineered functions, such as in the PROTOCOL.md notes.
-   "\\b0x[0-9A-F]{6,9}\\b",
-
    # Ignore false-positives for auth tokens in the following file:
    # - web-client\iron-svelte-client\src\lib\login\login.svelte
    "(?m)let authtoken =\\s+'.+';\\s?$",

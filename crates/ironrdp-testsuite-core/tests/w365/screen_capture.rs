@@ -52,7 +52,7 @@ fn negotiated_client() -> (ScreenCaptureClient, Arc<Mutex<Vec<Event>>>) {
     (client, events)
 }
 
-// oracle: reference Windows App 2.0.1485.0 RDCoreSdk.dll RdpScreenCaptureRedirectionClientChannel::SendClientReadyPdu
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §PDUs
 #[test]
 fn version_1_server_ready_is_answered_and_enables_uploads() {
     let (mut client, events) = started_client();
@@ -73,7 +73,7 @@ fn version_1_server_ready_is_answered_and_enables_uploads() {
     assert_eq!(*events.lock().unwrap(), [Event::UploadsReady]);
 }
 
-// oracle: reference Windows App 2.0.1485.0 RDCoreSdk.dll OnDataReceived, which accepts only protocol version 0x00010000
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §PDUs, which accepts only protocol version 0x00010000
 #[test]
 fn other_server_versions_leave_uploads_disabled() {
     let (mut client, events) = started_client();
@@ -88,7 +88,7 @@ fn other_server_versions_leave_uploads_disabled() {
     assert!(client.upload(ImageType::PNG, vec![0xAA]).is_err());
 }
 
-// oracle: reference Windows App 2.0.1485.0 RDCoreSdk.dll CreateScreenCapturePdu and UploadScreenCapture
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Screen capture (type 3)
 #[rstest]
 #[case::png(ImageType::PNG, 0x01)]
 #[case::jpeg(ImageType::JPEG, 0x02)]
@@ -110,7 +110,7 @@ fn upload_carries_the_image_type_capture_id_and_bytes(#[case] image_type: ImageT
     );
 }
 
-// oracle: reference Windows App 2.0.1485.0 RDCoreSdk.dll UploadScreenCapture, whose capture counter wraps after 0x7FFF
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Screen capture (type 3), whose capture counter wraps after 0x7FFF
 #[test]
 fn capture_ids_count_up_and_wrap_after_0x7fff() {
     let (mut client, _) = negotiated_client();
@@ -123,7 +123,7 @@ fn capture_ids_count_up_and_wrap_after_0x7fff() {
     assert_eq!(ids[0x7FFF..], [0x7FFF, 0]);
 }
 
-// oracle: reference Windows App 2.0.1485.0 RDCoreSdk.dll UploadScreenCapture, which rejects empty images
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Screen capture (type 3), which rejects empty images
 #[test]
 fn empty_image_is_rejected() {
     let (mut client, _) = negotiated_client();
@@ -131,7 +131,7 @@ fn empty_image_is_rejected() {
     assert!(client.upload(ImageType::PNG, Vec::new()).is_err());
 }
 
-// oracle: reference Windows App 2.0.1485.0 RDCoreSdk.dll HandleSaveResultPdu
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Save result (type 4)
 #[test]
 fn save_result_reaches_the_handler() {
     let (mut client, events) = negotiated_client();
@@ -161,7 +161,7 @@ fn save_result_reaches_the_handler() {
     );
 }
 
-// oracle: reference Windows App 2.0.1485.0 RDCoreSdk.dll HandleSaveResultPdu, which requires the string sizes to fill the payload
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Save result (type 4), which requires the string sizes to fill the payload
 #[test]
 fn save_result_with_inconsistent_string_sizes_is_ignored() {
     let (mut client, events) = negotiated_client();

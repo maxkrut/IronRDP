@@ -1,9 +1,5 @@
-//! Expected bytes and behavior come from the Windows App 2.0.1485.0 client, the only implementation of these channels:
-//! `RDCoreSdk.dll` (`RdpScreenCaptureRedirectionClientChannel`), `msrdc/rdclientax.dll`
-//! (`RdpBatteryStatusRedirectionClientChannel`), and `wnc/powerrequestredirectionplugin.dll`
-//! (`PowerRequestRedirectionChannel`).
-//! `crates/ironrdp-w365/PROTOCOL.md` pins those binaries by hash and locates each function an `oracle: reference` marker
-//! names, with the layout and rule it contributes.
+//! Expected bytes and behavior come from the Windows App 2.0.1485.0 client, the only implementation of these channels,
+//! as `crates/ironrdp-w365/PROTOCOL.md` records it.
 
 mod battery;
 mod power_request;

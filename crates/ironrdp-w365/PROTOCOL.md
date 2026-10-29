@@ -1,38 +1,13 @@
 # Windows 365 redirection wire formats
 
 No Microsoft Open Specification documents the battery status, power request, or screen capture redirection channels.
-This note records where each layout and rule in this crate comes from, so the `oracle: reference` markers in `crates/ironrdp-testsuite-core/tests/w365` can be checked against the binaries.
+This note describes the layouts and rules this crate implements, following the Windows App 2.0.1485.0 client, so the `oracle: reference` markers in `crates/ironrdp-testsuite-core/tests/w365` have one place to point to.
 
-## Pinned binaries
-
-Windows App 2.0.1485.0, package `MicrosoftCorporationII.Windows365_2.0.1485.0_x64__8wekyb3d8bbwe`.
-Paths are relative to the package root.
-
-| File | Version | SHA-256 | Channel |
-| --- | --- | --- | --- |
-| `msrdc/rdclientax.dll` | 1.2.7423.0 | `188F1B416B3ECB8B508CF4B4BDE69DC062C9F2114D03E93AD935AAE8E6207BDE` | battery status |
-| `wnc/powerrequestredirectionplugin.dll` | none | `E317C55B3371632A3D05E63F221612CF61E8206C92DC56BB277B45A0EA330131` | power request |
-| `RDCoreSdk.dll` | 11.0.9.719 | `CAF8724CC7FBCB8CA66EB3B00575F0D32671F255CF65CB4FB88F4269C351D9A4` | screen capture |
-
-The package also ships a different `wnc/RDCoreSdk.dll` build; only the root copy was analyzed.
-
-The DLLs ship without symbols.
-Each function below is named after the trace string it logs, and located by its relative virtual address (RVA); the image base of every DLL is `0x180000000`.
 All fields are little-endian.
 
 ## Battery status redirection
 
-`Microsoft::Windows::RDS::BatteryStatusRedirection`, implemented by `RdpBatteryStatusRedirectionClientChannel` in `rdclientax.dll`.
-
-| RVA | Function | Identified by |
-| --- | --- | --- |
-| `0x48DA90` | `OnNewChannelConnection` | `Failed to create RdpBatteryStatusRedirectionClientChannel` |
-| `0x48DC50` | RemoteApp check | `GetBoolProperty(TS_PROP_CORE_CONNECTION_IS_RAIL) failed` |
-| `0x48F640` | `OnDataReceived` | `RdpBatteryStatusRedirectionClientChannel DispatchAsyncCallWithBuffer failed!`, `HandleServerReadyPdu failed!` |
-| `0x48EB40` | `HandleServerReadyPdu`, which sends the client ready PDU | `SendClientReadyPdu failed!` |
-| `0x48F4D0` | battery info request handler | called back with the 16 bytes `OnDataReceived` dispatches |
-| `0x48EFB0` | battery update check | `SendBatteryInfoChangedPdu Failed` |
-| `0x48EDF0` | `SendBatteryInfoChangedPdu` | writes type 4 |
+`Microsoft::Windows::RDS::BatteryStatusRedirection`.
 
 ### Header
 
@@ -41,7 +16,7 @@ All fields are little-endian.
 | 0 | 2 | `pduType` |
 | 2 | 4 | `pduLength`: the whole PDU, header included |
 
-`OnDataReceived` rejects a buffer shorter than 6 bytes and a `pduLength` greater than the buffer, then checks each type against a minimum `pduLength`.
+The client rejects a buffer shorter than 6 bytes and a `pduLength` greater than the buffer, then checks each type against a minimum `pduLength`.
 
 ### PDUs
 
@@ -52,47 +27,39 @@ All fields are little-endian.
 | 3 | Battery info request | server to client | at least 16 | `batteryState` u32, `batteryLifePercent` u16, `batteryLifeMinutes` u32 |
 | 4 | Battery info changed | client to server | 16 | same fields as type 3 |
 
-`HandleServerReadyPdu` logs the server's version and flags and answers with version 1 whatever the server announced.
+The client answers a server ready PDU with version 1 whatever the server announced.
 
 ### Battery state
 
-`0x48EFB0` fills the fields from `GetSystemPowerStatus`:
+`BatteryState::ON_BATTERY`, `NO_BATTERY`, and `AC_POWER` are 0, 1, and 2.
+In terms of the Win32 `SYSTEM_POWER_STATUS` fields:
 
 - When `BatteryFlag` is `0x80` (no battery) or `0xFF` (unknown), the state is 1 and the percentage and minutes are 0.
 - Otherwise the state is 2 when `ACLineStatus` is 1 and 0 when it is not; the percentage is `BatteryLifePercent`; the minutes are `BatteryLifeTime / 60`, or 0 when `BatteryLifeTime` is `0xFFFFFFFF`.
 
-`BatteryState::ON_BATTERY`, `NO_BATTERY`, and `AC_POWER` are 0, 1, and 2.
 This crate leaves reading the battery to the embedder.
 
 ### Pacing
 
-The request handler (`0x48F4D0`) stores the state, percentage, and minutes the server sent as the server's current view, allows one update, and runs the update check.
-The update check also runs when the local battery changes, and sends a type 4 PDU only when an update is allowed and either:
+A battery info request carries the state, percentage, and minutes the server currently shows, and allows the client one update.
+The client sends a type 4 PDU, on that request or later when the local battery changes, only when an update is allowed and either:
 
 - no update was sent on this channel yet, or
-- the state or the percentage differs from the server's view.
+- the state or the percentage differs from what the server shows.
 
 The minutes alone never trigger an update.
-Sending clears the permission until the next type 3 request.
+Sending uses up the permission until the next type 3 request.
 
 ### RemoteApp
 
-`OnNewChannelConnection` (`0x48DA90`) accepts the channel only when the check at `0x48DC50` finds the core property `RailMode` false, so Windows App refuses the channel in RemoteApp sessions.
+Windows App does not open the channel in RemoteApp sessions.
 
 ## Power request redirection
 
-`Microsoft::Windows::RDS::PowerRequestRedirection`, implemented by `PowerRequestRedirectionChannel` in `powerrequestredirectionplugin.dll`.
-
-| RVA | Function | Identified by |
-| --- | --- | --- |
-| `0x129C0` | `OnDataReceived` | `PowerRequestRedirectionChannel::OnDataReceived` |
-| `0x119C0` | `HandleServerReadyPdu` | `PowerRequestRedirectionChannel::HandleServerReadyPdu` |
-| `0x13320` | `SendClientReadyPdu` | `PowerRequestRedirectionChannel::SendClientReadyPdu` |
-| `0x11510` | `HandlePowerRequestInfoChangedPdu` | `PowerRequestRedirectionChannel::HandlePowerRequestInfoChangedPdu` |
-| `0x13E60` | `SetPowerDisplayRequest` | `SetPowerDisplayRequest failed! {}`, logged by its caller |
+`Microsoft::Windows::RDS::PowerRequestRedirection`.
 
 The header is the same 6-byte type and length as the battery channel.
-`OnDataReceived` logs `Not enough data to read POWER_REQUEST_HEADER!` below 6 bytes and rejects a `pduLength` greater than the buffer.
+The client rejects a buffer shorter than 6 bytes and a `pduLength` greater than the buffer.
 
 | Type | Name | Direction | Length | Body after the header |
 | --- | --- | --- | --- | --- |
@@ -100,28 +67,19 @@ The header is the same 6-byte type and length as the battery channel.
 | 2 | Client ready | client to server | 14 | `protocolVersion` `0x00010000`, `protocolFlags` 0 |
 | 3 | Power request info changed | server to client | at least 10 | `powerRequestFlags` u32 |
 
-`SendClientReadyPdu` (`0x13320`) always writes version 1, whatever the server announced.
+The client always answers with version 1, whatever the server announced.
 
-`HandlePowerRequestInfoChangedPdu` (`0x11510`) reads `powerRequestFlags` at offset 6:
+`powerRequestFlags` is at offset 6:
 
 - Bit `0x1` means the Cloud PC holds power requests, and bit `0x2` means it holds none.
-- Neither bit fails with `One of 'Current Requests' and 'No current requests' must be set!`, and both bits fail with `'Current Requests' and 'No current requests' cannot both be set!`.
-- Otherwise it calls `SetPowerDisplayRequest` (`0x13E60`) with whether bit `0x1` is set; that function sets or clears `PowerRequestSystemRequired` and `PowerRequestDisplayRequired` with `PowerSetRequest` and `PowerClearRequest`.
+- A PDU with neither bit or with both bits is rejected.
+- Otherwise Windows App keeps the local system and display awake while bit `0x1` is set.
 
-Windows App's behavior when the channel closes while requests are held was not traced; this crate reports the requests as released.
+What Windows App does when the channel closes while requests are held was not determined; this crate reports the requests as released.
 
 ## Screen capture redirection
 
-`Microsoft::Windows::RDS::ScreenCaptureRedirection`, implemented by `RdpScreenCaptureRedirectionClientChannel` in `RDCoreSdk.dll`.
-
-| RVA | Function | Identified by |
-| --- | --- | --- |
-| `0x556640` | `OnDataReceived` | `Malformed ScreenCaptureRedirection PDU received. cbSize={}.` |
-| `0x559990` | `SendClientReadyPdu` | `RdpScreenCaptureRedirectionClientChannel::SendClientReadyPdu` |
-| `0x552600` | `CreateScreenCapturePdu` | `RdpScreenCaptureRedirectionClientChannel::CreateScreenCapturePdu` |
-| `0x55AFC0` | channel `UploadScreenCapture` | `CreateScreenCapturePdu failed! {}` |
-| `0x55D000` | plugin `UploadScreenCapture` | `ScreenCaptureRedirection upload rejected because client channel is unavailable. …` |
-| `0x552D40` | `HandleSaveResultPdu` | `RdpScreenCaptureRedirectionClientChannel::HandleSaveResultPdu` |
+`Microsoft::Windows::RDS::ScreenCaptureRedirection`.
 
 ### Header
 
@@ -133,7 +91,7 @@ This channel uses an 8-byte header.
 | 2 | 2 | `flags` |
 | 4 | 4 | `payloadLength`: the bytes after the header |
 
-`OnDataReceived` rejects a PDU unless it is at least 8 bytes and `payloadLength + 8` equals its size exactly.
+The client rejects a PDU unless it is at least 8 bytes and `payloadLength + 8` equals its size exactly.
 
 ### PDUs
 
@@ -148,13 +106,12 @@ A server ready PDU is accepted only when `flags` is 0, `payloadLength` is 8, and
 
 ### Screen capture (type 3)
 
-`CreateScreenCapturePdu` (`0x552600`) stores the image type in the header `flags` and sizes the PDU as the image plus 10 bytes, so the payload is the 2-byte capture ID followed by the image.
-`UploadScreenCapture` (`0x55AFC0`) rejects an empty image, uses image type 1 for PNG and 2 for JPEG, and takes capture IDs from a counter that wraps to 0 after `0x7FFF`.
-The plugin (`0x55D000`) rejects an upload while the channel is unavailable.
+The header `flags` hold the image type, 1 for PNG and 2 for JPEG, and the payload is the 2-byte capture ID followed by the image, so the PDU is the image plus 10 bytes.
+The client rejects an empty image and any upload while the channel is unavailable, and takes capture IDs from a counter that wraps to 0 after `0x7FFF`.
 
 ### Save result (type 4)
 
-`HandleSaveResultPdu` (`0x552D40`) reads:
+The client reads:
 
 - `captureId` at offset 8, which must not exceed `0x7FFF`.
 - `hresult` at offset 10, `cbFileName` at offset 14, and `cbFilePath` at offset 18.
@@ -164,6 +121,6 @@ It requires `cbFileName + cbFilePath` to equal `payloadLength - 14`.
 
 ## Not verified
 
-- No layout has been checked against a live Cloud PC session; every byte here comes from the client binaries.
+- No layout has been checked against a live Cloud PC session.
 - Whether the server NUL-terminates the save result's file name and path was not determined, so the decoder drops trailing NULs.
-- Windows App's screen capture counter is shared by the whole process and its starting value was not determined; each `ScreenCaptureClient` starts at 0.
+- Windows App shares its screen capture counter across the whole process and its starting value was not determined; each `ScreenCaptureClient` starts at 0.

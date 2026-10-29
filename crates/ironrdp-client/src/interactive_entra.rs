@@ -1,8 +1,7 @@
 //! Client side of the `Microsoft::Windows::RDS::InteractiveEntraAuth` dynamic virtual channel.
 //!
 //! A session host uses this channel to ask the client for a fresh Microsoft Entra sign-in during the session.
-//! No Microsoft Open Specification documents it; the exchange follows the Windows App 2.0.1485.0 client
-//! (`rdclientax.dll`, `InteractiveRdsAadAuthClient`):
+//! No Microsoft Open Specification documents it; the exchange follows the Windows App 2.0.1485.0 client:
 //!
 //! 1. The server sends a JSON request with `version` 1, a `scenario_id` GUID, and an optional `username_hint`.
 //! 2. The client runs a TLS handshake inside the channel, as the TLS client.
@@ -15,7 +14,7 @@
 //! Windows App also closes the channel then; a dynamic channel processor cannot close its own channel, so this client
 //! stops answering instead.
 //!
-//! [`PROTOCOL.interactive-entra-auth.md`] records the Windows App functions each rule comes from.
+//! [`PROTOCOL.interactive-entra-auth.md`] describes the exchange in more detail.
 //!
 //! [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
 //! [`PROTOCOL.interactive-entra-auth.md`]: https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp-client/PROTOCOL.interactive-entra-auth.md

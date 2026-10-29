@@ -2,7 +2,7 @@
 //!
 //! No Microsoft Open Specification documents this channel.
 //! The layouts follow the Windows App 2.0.1485.0 client, which reads every field little-endian after a common header;
-//! [`PROTOCOL.md`] records the binary functions each layout comes from.
+//! [`PROTOCOL.md`] describes each layout and rule.
 //!
 //! [`PROTOCOL.md`]: https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp-vdcswitch/PROTOCOL.md
 

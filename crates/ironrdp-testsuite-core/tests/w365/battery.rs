@@ -58,7 +58,7 @@ fn request(client: &mut BatteryStatusClient, state: u8, percent: u8) -> Vec<Vec<
     )
 }
 
-// oracle: reference Windows App 2.0.1485.0 rdclientax.dll RdpBatteryStatusRedirectionClientChannel SendClientReadyPdu
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §PDUs
 #[test]
 fn server_ready_is_answered_with_a_version_1_client_ready() {
     let mut client = started_client();
@@ -88,7 +88,7 @@ fn server_ready_asks_the_handler_for_a_reading() {
     assert_eq!(requests.load(Ordering::Relaxed), 1);
 }
 
-// oracle: reference Windows App 2.0.1485.0 rdclientax.dll SendBatteryInfoChangedPdu, sent only once the server requests an update
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Pacing, which sends an update only once the server requests one
 #[test]
 fn reading_is_sent_when_the_server_requests_it() {
     let mut client = started_client();
@@ -113,7 +113,7 @@ fn reading_is_sent_when_the_server_requests_it() {
     );
 }
 
-// oracle: reference Windows App 2.0.1485.0 rdclientax.dll, which clears its send permission after each battery update
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Pacing, which uses up the permission with each update
 #[test]
 fn each_server_request_allows_one_update() {
     let mut client = started_client();
@@ -132,7 +132,7 @@ fn each_server_request_allows_one_update() {
     assert_eq!(next.len(), 1);
 }
 
-// oracle: reference Windows App 2.0.1485.0 rdclientax.dll, which sends only when the state or percentage differs from the server's
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Pacing, which sends only when the state or percentage differs from the server's
 #[test]
 fn reading_the_server_already_shows_is_held_until_it_changes() {
     let mut client = started_client();

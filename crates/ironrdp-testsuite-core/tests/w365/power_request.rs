@@ -31,7 +31,7 @@ fn info_changed(flags: u8) -> [u8; 10] {
     ]
 }
 
-// oracle: reference Windows App 2.0.1485.0 powerrequestredirectionplugin.dll PowerRequestRedirectionChannel::SendClientReadyPdu
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Power request redirection
 #[test]
 fn server_ready_is_answered_with_a_version_1_client_ready() {
     let (mut client, _) = started_client();
@@ -55,7 +55,7 @@ fn server_ready_is_answered_with_a_version_1_client_ready() {
     );
 }
 
-// oracle: reference Windows App 2.0.1485.0 powerrequestredirectionplugin.dll HandlePowerRequestInfoChangedPdu
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Power request redirection
 #[rstest]
 #[case::current_requests(0x01, true)]
 #[case::no_current_requests(0x02, false)]
@@ -68,7 +68,7 @@ fn power_request_state_reaches_the_handler(#[case] flags: u8, #[case] active: bo
     assert_eq!(*changes.lock().unwrap(), [active]);
 }
 
-// oracle: reference Windows App 2.0.1485.0 powerrequestredirectionplugin.dll HandlePowerRequestInfoChangedPdu, which requires exactly one state flag
+// oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-w365/PROTOCOL.md §Power request redirection, which requires exactly one state flag
 #[rstest]
 #[case::both_flags(0x03)]
 #[case::neither_flag(0x00)]

@@ -4,7 +4,7 @@
 //! Updates are paced by the server: each battery info request, which carries the state the Cloud PC currently shows,
 //! allows the client one battery-info-changed PDU, sent only when the charge state or percentage differs or no
 //! update was sent yet.
-//! See [`PROTOCOL.md`] for the layouts and the Windows App functions they come from.
+//! See [`PROTOCOL.md`] for the layouts and the client behavior.
 //!
 //! [`PROTOCOL.md`]: https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp-w365/PROTOCOL.md#battery-status-redirection
 
@@ -50,7 +50,7 @@ impl BatteryState {
     pub const AC_POWER: Self = Self(2);
 }
 
-/// Battery reading, as Windows App derives it from `GetSystemPowerStatus`.
+/// Battery reading; `PROTOCOL.md` maps it from the Win32 `SYSTEM_POWER_STATUS` fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BatteryInfo {
     pub state: BatteryState,
