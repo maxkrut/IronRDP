@@ -880,6 +880,14 @@ impl RpcApp {
             RdpOutputEvent::ScreenCaptureReady => debug!("Cloud PC accepts screen capture uploads"),
             RdpOutputEvent::ScreenCaptureUploaded { capture_id } => debug!(?capture_id, "Screen capture uploaded"),
             RdpOutputEvent::ScreenCaptureSaved(result) => debug!(?result, "Cloud PC saved a screen capture"),
+            // Only produced when the interactive Entra channel is enabled, which the viewer does not do; it has no
+            // sign-in flow, so dropping the request reports the sign-in as cancelled.
+            RdpOutputEvent::InteractiveEntraAuthRequested(request) => {
+                debug!(?request, "Declining an interactive Entra sign-in request");
+            }
+            RdpOutputEvent::InteractiveEntraAuthCompleted { hresult } => {
+                debug!(hresult, "Interactive Entra sign-in completed");
+            }
         }
     }
 }

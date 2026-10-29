@@ -20,6 +20,8 @@ pub mod egfx_cache;
 #[cfg(feature = "entra-auth")]
 pub mod entra;
 pub mod h264;
+#[cfg(feature = "entra-auth")]
+pub mod interactive_entra;
 pub mod output_channel;
 pub mod rail;
 pub mod rdp;

@@ -464,6 +464,14 @@ pub struct ChannelConfig {
     #[cfg(feature = "w365")]
     pub screen_capture: bool,
 
+    /// Enable the `Microsoft::Windows::RDS::InteractiveEntraAuth` dynamic virtual channel, through which the session
+    /// host can ask for an interactive Microsoft Entra sign-in during the session.
+    ///
+    /// Off by default, like in Windows App. Requests arrive as
+    /// [`RdpOutputEvent::InteractiveEntraAuthRequested`](crate::rdp::RdpOutputEvent::InteractiveEntraAuthRequested).
+    #[cfg(feature = "entra-auth")]
+    pub interactive_entra_auth: bool,
+
     /// Maximum number of simultaneous touch contacts advertised in the RDPEI `CS_READY` PDU.
     ///
     /// Defaults to [`RDPEI_MAX_TOUCH_CONTACTS`](crate::rdp::RDPEI_MAX_TOUCH_CONTACTS).
@@ -528,6 +536,8 @@ impl Default for ChannelConfig {
             power_request: false,
             #[cfg(feature = "w365")]
             screen_capture: false,
+            #[cfg(feature = "entra-auth")]
+            interactive_entra_auth: false,
             max_touch_contacts: crate::rdp::RDPEI_MAX_TOUCH_CONTACTS,
             #[cfg(feature = "camera")]
             cameras: crate::camera::CameraConfig::default(),
@@ -1962,6 +1972,16 @@ impl ConfigBuilder {
     #[must_use]
     pub fn with_screen_capture_redirection(mut self, enabled: bool) -> Self {
         self.channels.screen_capture = enabled;
+        self
+    }
+
+    /// Enable the `Microsoft::Windows::RDS::InteractiveEntraAuth` dynamic virtual channel.
+    ///
+    /// See [`ChannelConfig::interactive_entra_auth`].
+    #[cfg(feature = "entra-auth")]
+    #[must_use]
+    pub fn with_interactive_entra_auth(mut self, enabled: bool) -> Self {
+        self.channels.interactive_entra_auth = enabled;
         self
     }
 

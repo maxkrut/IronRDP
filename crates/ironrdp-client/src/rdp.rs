@@ -316,6 +316,19 @@ pub enum RdpOutputEvent {
     /// The Cloud PC reported where it saved an uploaded screenshot, or why it could not.
     #[cfg(feature = "w365")]
     ScreenCaptureSaved(ironrdp_w365::screen_capture::SaveResult),
+    /// The session host asked for an interactive Microsoft Entra sign-in over the
+    /// `Microsoft::Windows::RDS::InteractiveEntraAuth` channel.
+    ///
+    /// Acquire an RDS AAD token for the request's resource and answer with
+    /// [`InteractiveEntraAuthRequest::grant`](crate::interactive_entra::InteractiveEntraAuthRequest::grant).
+    /// Dropping the request reports the sign-in as cancelled.
+    #[cfg(feature = "entra-auth")]
+    InteractiveEntraAuthRequested(crate::interactive_entra::InteractiveEntraAuthRequest),
+    /// The session host answered an interactive Entra sign-in with an HRESULT, where 0 is success.
+    #[cfg(feature = "entra-auth")]
+    InteractiveEntraAuthCompleted {
+        hresult: u32,
+    },
     Terminated(SessionResult<GracefulDisconnectReason>),
 }
 
@@ -792,6 +805,14 @@ impl RdpInputSender {
     /// the input event is guaranteed to fit in the bounded queue.
     pub fn try_reserve(&self) -> Result<mpsc::Permit<'_, RdpInputEvent>, mpsc::error::TrySendError<()>> {
         self.input_sender.try_reserve()
+    }
+
+    /// Queues `event`, waiting for room in the bounded input queue.
+    ///
+    /// Returns `false` once the session has stopped reading input.
+    #[cfg(feature = "entra-auth")]
+    pub(crate) async fn send(&self, event: RdpInputEvent) -> bool {
+        self.input_sender.send(event).await.is_ok()
     }
 
     /// Queues a RemoteApp launch without allowing the ordinary input queue to grow unbounded.
@@ -2280,14 +2301,15 @@ fn build_connector(
         feature = "sound",
         all(windows, feature = "webauthn"),
         all(windows, feature = "camera"),
-        feature = "usb"
+        feature = "usb",
+        feature = "entra-auth"
     )))]
     let _ = input_sender;
     #[cfg(not(feature = "clipboard"))]
     let _ = cliprdr_factory;
     #[cfg(not(feature = "rdpdr"))]
     let _ = (rdpdr_factory, rdpdr_policy);
-    #[cfg(not(all(windows, feature = "vmconnect")))]
+    #[cfg(not(any(all(windows, feature = "vmconnect"), feature = "entra-auth")))]
     let _ = output_event_sender;
     #[cfg(not(feature = "usb"))]
     let _ = usb_allowed;
@@ -2362,6 +2384,15 @@ fn build_connector(
         if config.channels.screen_capture {
             drdynvc = drdynvc.with_dynamic_channel(ScreenCaptureClient::new(channel_events()));
         }
+    }
+
+    #[cfg(feature = "entra-auth")]
+    if config.channels.interactive_entra_auth {
+        drdynvc = drdynvc.with_dynamic_channel(crate::interactive_entra::InteractiveEntraAuthChannel::new(
+            config.destination.name().to_owned(),
+            input_sender.clone(),
+            output_event_sender.clone(),
+        ));
     }
 
     #[cfg(all(windows, feature = "vmconnect"))]
