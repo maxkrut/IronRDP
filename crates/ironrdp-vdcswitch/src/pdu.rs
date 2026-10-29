@@ -1,7 +1,10 @@
 //! Virtual desktop control PDUs.
 //!
 //! No Microsoft Open Specification documents this channel.
-//! The layouts follow the Windows App 2.0.1485.0 client, which reads every field little-endian after a common header.
+//! The layouts follow the Windows App 2.0.1485.0 client, which reads every field little-endian after a common header;
+//! [`PROTOCOL.md`] records the binary functions each layout comes from.
+//!
+//! [`PROTOCOL.md`]: https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp-vdcswitch/PROTOCOL.md
 
 use alloc::string::String;
 use core::fmt;
@@ -81,10 +84,11 @@ impl fmt::Debug for LocalAction {
 ///
 /// Windows App advertises the local actions it supports through query parameters, such as
 /// `ms-remotedesktop-launch:?correlationId=<id>&supportBluetoothSettings=true`.
-///
-/// INVARIANT: the URI contains no NUL character, so its null-terminated UTF-16 encoding round-trips.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LaunchUri(String);
+pub struct LaunchUri(
+    /// INVARIANT: contains no NUL character, so its null-terminated UTF-16 encoding round-trips.
+    String,
+);
 
 impl LaunchUri {
     pub fn new(uri: String) -> EncodeResult<Self> {
@@ -179,6 +183,7 @@ impl VersionRequestPdu {
 /// Virtual desktop control PDU.
 ///
 /// Every PDU starts with a 16-bit type and a 32-bit length that counts the whole PDU, header included.
+/// See [`PROTOCOL.md`](https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp-vdcswitch/PROTOCOL.md#pdus).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VdcSwitchPdu {
     /// Client to server: the versions and launch URI the client supports.

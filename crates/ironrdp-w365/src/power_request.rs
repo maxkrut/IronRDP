@@ -3,6 +3,7 @@
 //! The Cloud PC reports whether it currently holds power requests, and the client keeps the physical device awake while it does.
 //! Windows App answers an active report with `PowerSetRequest` for `PowerRequestSystemRequired` and `PowerRequestDisplayRequired`,
 //! and an inactive one by clearing both.
+//! See [`PROTOCOL.md`](https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp-w365/PROTOCOL.md#power-request-redirection) for the layouts and the Windows App functions they come from.
 
 use alloc::boxed::Box;
 use alloc::vec;

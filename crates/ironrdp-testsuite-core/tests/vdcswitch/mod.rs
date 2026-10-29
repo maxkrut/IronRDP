@@ -21,6 +21,7 @@ enum Event {
     SwitchToLocal,
     LocalAction(LocalAction),
     SwitchToCloudCompleted(u32),
+    NegotiationFailed(ProtocolVersion),
 }
 
 struct RecordingHandler {
@@ -40,6 +41,10 @@ impl VdcSwitchHandler for RecordingHandler {
 
     fn switch_to_cloud_completed(&mut self, hresult: u32) {
         self.events.lock().unwrap().push(Event::SwitchToCloudCompleted(hresult));
+    }
+
+    fn version_negotiation_failed(&mut self, version: ProtocolVersion) {
+        self.events.lock().unwrap().push(Event::NegotiationFailed(version));
     }
 }
 
@@ -64,6 +69,25 @@ fn encoded(messages: &[ironrdp_dvc::DvcMessage]) -> Vec<Vec<u8>> {
 
 fn process(client: &mut VdcSwitchClient, payload: &[u8]) -> Vec<Vec<u8>> {
     encoded(&client.process(CHANNEL_ID, payload).expect("process PDU"))
+}
+
+/// Returns the channel payloads of DRDYNVC messages, checking that each targets the test channel.
+fn dvc_payloads(messages: &[ironrdp_svc::SvcMessage]) -> Vec<Vec<u8>> {
+    messages
+        .iter()
+        .map(|message| {
+            let unframed = message.encode_unframed_pdu().expect("encode DRDYNVC PDU");
+            let dvc: DrdynvcClientPdu = ironrdp_core::decode(&unframed).expect("decode DRDYNVC PDU");
+            let DrdynvcClientPdu::Data(data_pdu) = dvc else {
+                panic!("expected DRDYNVC data");
+            };
+            assert_eq!(data_pdu.channel_id(), CHANNEL_ID);
+            let DrdynvcDataPdu::Data(data) = data_pdu else {
+                panic!("expected unsplit DRDYNVC data");
+            };
+            data.data().to_vec()
+        })
+        .collect()
 }
 
 const VERSION_RESPONSE_V1: [u8; 10] = [
@@ -176,7 +200,7 @@ fn local_action_is_ignored_without_version_2(#[case] version_response: Option<[u
 
 // oracle: reference Windows App 2.0.1485.0 rdclientax.dll, which closes the channel on an unsupported version
 #[test]
-fn unsupported_version_response_silences_the_channel() {
+fn unsupported_version_response_is_reported_and_silences_the_channel() {
     let (mut client, events) = started_client("uri", Some(0));
     let version_3 = [
         0x02, 0x00, // VERSION_RESPONSE
@@ -188,7 +212,10 @@ fn unsupported_version_response_silences_the_channel() {
     let replies = process(&mut client, &SWITCH_TO_LOCAL_REQUEST);
 
     assert_eq!(client.negotiated_version(), None);
-    assert!(events.lock().unwrap().is_empty());
+    assert_eq!(
+        *events.lock().unwrap(),
+        [Event::NegotiationFailed(ProtocolVersion(0x0003_0000))]
+    );
     assert!(replies.is_empty());
     assert!(client.request_switch_to_cloud().is_err());
 }
@@ -233,22 +260,12 @@ fn switch_to_cloud_request_is_a_bare_header() {
 
     let messages = client.request_switch_to_cloud().expect("open channel");
 
-    assert_eq!(messages.len(), 1);
-    let unframed = messages[0].encode_unframed_pdu().expect("encode DRDYNVC PDU");
-    let dvc: DrdynvcClientPdu = ironrdp_core::decode(&unframed).expect("decode DRDYNVC PDU");
-    let DrdynvcClientPdu::Data(data_pdu) = dvc else {
-        panic!("expected DRDYNVC data");
-    };
-    assert_eq!(data_pdu.channel_id(), CHANNEL_ID);
-    let DrdynvcDataPdu::Data(data) = data_pdu else {
-        panic!("expected unsplit DRDYNVC data");
-    };
     assert_eq!(
-        data.data(),
-        [
+        dvc_payloads(&messages),
+        [vec![
             0x05, 0x00, // SWITCH_TO_CLOUD_REQUEST
             0x06, 0x00, 0x00, 0x00, // pduLength
-        ]
+        ]]
     );
 }
 
@@ -274,6 +291,33 @@ fn switch_to_cloud_request_needs_an_open_channel() {
     client.close(CHANNEL_ID);
 
     assert!(client.request_switch_to_cloud().is_err());
+}
+
+// oracle: mutant LaunchUri::new accepting a URI that cannot round-trip through its null-terminated encoding
+#[test]
+fn launch_uri_with_a_nul_is_rejected() {
+    assert!(LaunchUri::new("a\0b".to_owned()).is_err());
+}
+
+// oracle: mutant VersionRequestPdu decoding a launch URI that breaks the no-NUL invariant
+#[test]
+fn version_request_with_an_embedded_nul_is_rejected() {
+    let version_request = [
+        0x01, 0x00, // VERSION_REQUEST
+        0x1A, 0x00, 0x00, 0x00, // pduLength
+        0x00, 0x00, 0x01, 0x00, // minimum version 1
+        0x00, 0x00, 0x02, 0x00, // maximum version 2
+        0x08, 0x00, 0x00, 0x00, // launch URI size
+        0x61, 0x00, 0x00, 0x00, 0x62, 0x00, // "a", NUL, "b"
+        0x00, 0x00, // terminator
+    ];
+
+    let error = ironrdp_core::decode::<VdcSwitchPdu>(&version_request).expect_err("embedded NUL");
+
+    assert!(matches!(
+        error.kind(),
+        DecodeErrorKind::InvalidField { field: "launchUri", .. }
+    ));
 }
 
 fn any_pdu() -> impl Strategy<Value = VdcSwitchPdu> {
