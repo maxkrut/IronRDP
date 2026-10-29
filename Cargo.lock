@@ -2876,6 +2876,7 @@ dependencies = [
  "picky",
  "rand 0.9.5",
  "reqwest",
+ "rstest",
  "rustls-native-certs",
  "serde",
  "serde_json",
@@ -5087,6 +5088,7 @@ dependencies = [
  "sha2 0.11.1",
  "sha3",
  "thiserror 2.0.21",
+ "time",
  "x25519-dalek",
  "zeroize",
 ]

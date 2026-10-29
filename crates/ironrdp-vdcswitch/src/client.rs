@@ -84,6 +84,14 @@ impl VdcSwitchClient {
         }
     }
 
+    /// Returns the channel ID while the channel is open and usable.
+    fn open_channel_id(&self) -> Option<u32> {
+        match self.state {
+            State::AwaitingVersion { channel_id } | State::Active { channel_id, .. } => Some(channel_id),
+            State::Closed | State::Failed => None,
+        }
+    }
+
     /// Returns the version the server selected, once negotiation has succeeded.
     pub fn negotiated_version(&self) -> Option<ProtocolVersion> {
         match self.state {
@@ -96,14 +104,11 @@ impl VdcSwitchClient {
     ///
     /// Like Windows App, this needs only an open channel, not a completed version negotiation.
     pub fn request_switch_to_cloud(&self) -> PduResult<Vec<SvcMessage>> {
-        let channel_id = match self.state {
-            State::AwaitingVersion { channel_id } | State::Active { channel_id, .. } => channel_id,
-            State::Closed | State::Failed => {
-                return Err(pdu_other_err!(
-                    "VdcSwitchClient::request_switch_to_cloud",
-                    "virtual desktop control channel is not open"
-                ));
-            }
+        let Some(channel_id) = self.open_channel_id() else {
+            return Err(pdu_other_err!(
+                "VdcSwitchClient::request_switch_to_cloud",
+                "virtual desktop control channel is not open"
+            ));
         };
 
         encode_dvc_messages(
@@ -131,9 +136,8 @@ impl DvcProcessor for VdcSwitchClient {
     }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
-        let channel_id = match self.state {
-            State::AwaitingVersion { channel_id } | State::Active { channel_id, .. } => channel_id,
-            State::Closed | State::Failed => return Ok(Vec::new()),
+        let Some(channel_id) = self.open_channel_id() else {
+            return Ok(Vec::new());
         };
 
         let pdu: VdcSwitchPdu = match decode(payload) {

@@ -8,11 +8,12 @@ use std::sync::{Arc, Mutex};
 
 use ironrdp_core::{DecodeErrorKind, encode_vec};
 use ironrdp_dvc::DvcProcessor as _;
-use ironrdp_dvc::pdu::{DrdynvcClientPdu, DrdynvcDataPdu};
 use ironrdp_vdcswitch::client::{VdcSwitchClient, VdcSwitchHandler};
 use ironrdp_vdcswitch::pdu::{LaunchUri, LocalAction, ProtocolVersion, VdcSwitchPdu, VersionRequestPdu};
 use proptest::prelude::*;
 use rstest::rstest;
+
+use crate::dvc_messages::encoded;
 
 const CHANNEL_ID: u32 = 7;
 
@@ -60,34 +61,13 @@ fn started_client(launch_uri: &str, switch_to_local_reply: Option<u32>) -> (VdcS
     (client, events)
 }
 
-fn encoded(messages: &[ironrdp_dvc::DvcMessage]) -> Vec<Vec<u8>> {
-    messages
-        .iter()
-        .map(|message| encode_vec(message.as_ref()).expect("encode DVC message"))
-        .collect()
-}
-
 fn process(client: &mut VdcSwitchClient, payload: &[u8]) -> Vec<Vec<u8>> {
     encoded(&client.process(CHANNEL_ID, payload).expect("process PDU"))
 }
 
 /// Returns the channel payloads of DRDYNVC messages, checking that each targets the test channel.
 fn dvc_payloads(messages: &[ironrdp_svc::SvcMessage]) -> Vec<Vec<u8>> {
-    messages
-        .iter()
-        .map(|message| {
-            let unframed = message.encode_unframed_pdu().expect("encode DRDYNVC PDU");
-            let dvc: DrdynvcClientPdu = ironrdp_core::decode(&unframed).expect("decode DRDYNVC PDU");
-            let DrdynvcClientPdu::Data(data_pdu) = dvc else {
-                panic!("expected DRDYNVC data");
-            };
-            assert_eq!(data_pdu.channel_id(), CHANNEL_ID);
-            let DrdynvcDataPdu::Data(data) = data_pdu else {
-                panic!("expected unsplit DRDYNVC data");
-            };
-            data.data().to_vec()
-        })
-        .collect()
+    crate::dvc_messages::dvc_payloads(messages, CHANNEL_ID)
 }
 
 const VERSION_RESPONSE_V1: [u8; 10] = [

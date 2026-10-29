@@ -9,33 +9,11 @@ mod battery;
 mod power_request;
 mod screen_capture;
 
-use ironrdp_core::encode_vec;
-use ironrdp_dvc::pdu::{DrdynvcClientPdu, DrdynvcDataPdu};
+use crate::dvc_messages::encoded;
 
 const CHANNEL_ID: u32 = 3;
 
-fn encoded(messages: &[ironrdp_dvc::DvcMessage]) -> Vec<Vec<u8>> {
-    messages
-        .iter()
-        .map(|message| encode_vec(message.as_ref()).expect("encode DVC message"))
-        .collect()
-}
-
 /// Returns the channel payloads of DRDYNVC messages, checking that each targets the test channel.
 fn dvc_payloads(messages: &[ironrdp_svc::SvcMessage]) -> Vec<Vec<u8>> {
-    messages
-        .iter()
-        .map(|message| {
-            let unframed = message.encode_unframed_pdu().expect("encode DRDYNVC PDU");
-            let dvc: DrdynvcClientPdu = ironrdp_core::decode(&unframed).expect("decode DRDYNVC PDU");
-            let DrdynvcClientPdu::Data(data_pdu) = dvc else {
-                panic!("expected DRDYNVC data");
-            };
-            assert_eq!(data_pdu.channel_id(), CHANNEL_ID);
-            let DrdynvcDataPdu::Data(data) = data_pdu else {
-                panic!("expected unsplit DRDYNVC data");
-            };
-            data.data().to_vec()
-        })
-        .collect()
+    crate::dvc_messages::dvc_payloads(messages, CHANNEL_ID)
 }

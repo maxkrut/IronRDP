@@ -19,6 +19,7 @@ mod connector;
 mod cursor;
 mod displaycontrol;
 mod dvc;
+mod dvc_messages;
 mod echo;
 mod egfx;
 mod error;

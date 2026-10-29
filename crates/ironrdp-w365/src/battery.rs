@@ -4,7 +4,9 @@
 //! Updates are paced by the server: each battery info request, which carries the state the Cloud PC currently shows,
 //! allows the client one battery-info-changed PDU, sent only when the charge state or percentage differs or no
 //! update was sent yet.
-//! See [`PROTOCOL.md`](https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp-w365/PROTOCOL.md#battery-status-redirection) for the layouts and the Windows App functions they come from.
+//! See [`PROTOCOL.md`] for the layouts and the Windows App functions they come from.
+//!
+//! [`PROTOCOL.md`]: https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp-w365/PROTOCOL.md#battery-status-redirection
 
 use alloc::boxed::Box;
 use alloc::vec;

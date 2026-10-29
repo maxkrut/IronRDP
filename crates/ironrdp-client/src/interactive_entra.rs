@@ -15,11 +15,13 @@
 //! Windows App also closes the channel then; a dynamic channel processor cannot close its own channel, so this client
 //! stops answering instead.
 //!
+//! [`PROTOCOL.interactive-entra-auth.md`] records the Windows App functions each rule comes from.
+//!
 //! [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/
+//! [`PROTOCOL.interactive-entra-auth.md`]: https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp-client/PROTOCOL.interactive-entra-auth.md
 
 use core::fmt;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use ironrdp_connector::entra::{ENTRA_JSON_HINT, authentication_result, server_nonce, write_assertion};
 use ironrdp_core::{Encode, EncodeResult, WriteBuf, WriteCursor, ensure_size, impl_as_any};
@@ -29,7 +31,7 @@ use ironrdp_svc::ChannelFlags;
 use picky::x509::Cert;
 use picky::x509::date::UtcDate;
 use serde_json::Value;
-use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _, DuplexStream};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 use zeroize::Zeroize as _;
@@ -59,6 +61,9 @@ const E_CANCELLED: u32 = 0x8007_04C7;
 // Local resource limits, not protocol-defined maximums.
 const MAX_REQUEST_SIZE: usize = 64 * 1024;
 const TRANSPORT_BUFFER_SIZE: usize = 256 * 1024;
+
+/// The TLS stream that runs inside the channel.
+type TlsTunnel = ironrdp_tls::TlsStream<DuplexStream>;
 
 /// A session host's request for an interactive Microsoft Entra sign-in.
 ///
@@ -297,7 +302,7 @@ async fn run_exchange(context: ExchangeContext, mut incoming: mpsc::UnboundedRec
 /// Copies channel data into the TLS transport and TLS output onto the channel until the TLS side is dropped.
 async fn pump_transport(
     context: &ExchangeContext,
-    transport: tokio::io::DuplexStream,
+    transport: DuplexStream,
     mut incoming: mpsc::UnboundedReceiver<Vec<u8>>,
 ) {
     let (mut reader, mut writer) = tokio::io::split(transport);
@@ -327,7 +332,7 @@ async fn pump_transport(
     }
 }
 
-async fn authenticate(context: &ExchangeContext, request: ParsedRequest, tls_io: tokio::io::DuplexStream) {
+async fn authenticate(context: &ExchangeContext, request: ParsedRequest, tls_io: DuplexStream) {
     // The certificate is checked against the embedder's tenant roots once the token is granted, as Windows App does.
     let (mut tls, certificate) = match ironrdp_tls::upgrade_with_certificate_validation(
         tls_io,
@@ -363,15 +368,12 @@ async fn authenticate(context: &ExchangeContext, request: ParsedRequest, tls_io:
     }
 }
 
-async fn authenticate_over_tls<S>(
+async fn authenticate_over_tls(
     context: &ExchangeContext,
     request: ParsedRequest,
-    tls: &mut S,
+    tls: &mut TlsTunnel,
     certificate: &x509_cert::Certificate,
-) -> Result<u32, u32>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
+) -> Result<u32, u32> {
     use x509_cert::der::Encode as _;
 
     let certificate = certificate.to_der().map_err(|_| E_FAIL)?;
@@ -392,14 +394,7 @@ where
         warn!("The granted Entra token is not for the requesting session host");
         return Err(E_ACCESSDENIED);
     }
-    let now = utc_date(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| E_FAIL)?
-            .as_secs(),
-    )
-    .ok_or(E_FAIL)?;
-    verify_server_certificate(&certificate, &grant.p2p_root_certificates, &now)?;
+    verify_server_certificate(&certificate, &grant.p2p_root_certificates, &UtcDate::now())?;
 
     let mut reader = MessageReader::default();
     let server_nonce = server_nonce(&reader.next(tls).await?).map_err(|error| {
@@ -438,10 +433,7 @@ struct MessageReader {
 }
 
 impl MessageReader {
-    async fn next<S>(&mut self, stream: &mut S) -> Result<Vec<u8>, u32>
-    where
-        S: AsyncRead + Unpin,
-    {
+    async fn next(&mut self, stream: &mut TlsTunnel) -> Result<Vec<u8>, u32> {
         loop {
             match ENTRA_JSON_HINT.find_size(&self.buffer) {
                 Ok(Some((_, length))) => return Ok(self.buffer.drain(..length).collect()),
@@ -535,38 +527,12 @@ fn verify_server_certificate(certificate: &[u8], p2p_roots: &[Vec<u8>], now: &Ut
     if issued_by_root { Ok(()) } else { Err(E_ACCESSDENIED) }
 }
 
-/// Converts seconds since the Unix epoch to a UTC date, without a calendar dependency.
-fn utc_date(unix_seconds: u64) -> Option<UtcDate> {
-    // Howard Hinnant's days-to-civil algorithm, with eras of 400 years starting on 0000-03-01.
-    let days = i64::try_from(unix_seconds / 86_400).ok()? + 719_468;
-    let seconds_of_day = unix_seconds % 86_400;
-    let era = days.div_euclid(146_097);
-    let day_of_era = days.rem_euclid(146_097);
-    let year_of_era = (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let shifted_month = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
-    let month = if shifted_month < 10 {
-        shifted_month + 3
-    } else {
-        shifted_month - 9
-    };
-    let year = year_of_era + era * 400 + i64::from(month <= 2);
-    UtcDate::new(
-        u16::try_from(year).ok()?,
-        u8::try_from(month).ok()?,
-        u8::try_from(day).ok()?,
-        u8::try_from(seconds_of_day / 3_600).ok()?,
-        u8::try_from(seconds_of_day % 3_600 / 60).ok()?,
-        u8::try_from(seconds_of_day % 60).ok()?,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use picky::key::PrivateKey;
     use picky::x509::certificate::CertificateBuilder;
     use picky::x509::name::DirectoryName;
+    use rstest::rstest;
 
     use super::*;
 
@@ -621,7 +587,7 @@ mod tests {
         }
     }
 
-    // oracle: reference Windows App 2.0.1485.0 rdclientax.dll sub_1804AC030, which reads version, scenario_id, and username_hint
+    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-client/PROTOCOL.interactive-entra-auth.md §Request, which reads version, scenario_id, and username_hint
     #[test]
     fn request_with_a_known_scenario_is_accepted() {
         let request = br#"{"version":1,"scenario_id":"{75CC6D06-3A48-43A1-BCD0-CB46EB8F9AAE}","username_hint":"user@contoso.com"}"#;
@@ -635,7 +601,7 @@ mod tests {
         );
     }
 
-    // oracle: reference Windows App 2.0.1485.0 rdclientax.dll sub_1804AC030, whose username_hint is optional
+    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-client/PROTOCOL.interactive-entra-auth.md §Request, whose username_hint is optional
     #[test]
     fn username_hint_is_optional() {
         let request = b"{\"version\":1,\"scenario_id\":\"b419e9ce-25cd-44bc-8da5-6ff75edd1e28\"}\0";
@@ -643,36 +609,23 @@ mod tests {
         assert_eq!(parse_request(request).map(|request| request.username_hint), Ok(None));
     }
 
-    // oracle: reference Windows App 2.0.1485.0 rdclientax.dll sub_1804AC030, which fails these requests with E_NOTIMPL or E_INVALIDARG
-    #[test]
-    fn invalid_requests_are_rejected() {
-        let cases: [(&str, &[u8], u32); 4] = [
-            (
-                "version 2",
-                br#"{"version":2,"scenario_id":"75cc6d06-3a48-43a1-bcd0-cb46eb8f9aae"}"#,
-                E_NOTIMPL,
-            ),
-            (
-                "unknown scenario",
-                br#"{"version":1,"scenario_id":"00000000-0000-0000-0000-000000000000"}"#,
-                E_NOTIMPL,
-            ),
-            ("missing scenario", br#"{"version":1}"#, E_INVALIDARG),
-            ("not JSON", b"not json", E_INVALIDARG),
-        ];
-
-        for (case, request, hresult) in cases {
-            assert_eq!(parse_request(request), Err(hresult), "{case}");
-        }
+    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-client/PROTOCOL.interactive-entra-auth.md §Request, which fails these requests with E_NOTIMPL or E_INVALIDARG
+    #[rstest]
+    #[case::version_2(br#"{"version":2,"scenario_id":"75cc6d06-3a48-43a1-bcd0-cb46eb8f9aae"}"#.as_slice(), E_NOTIMPL)]
+    #[case::unknown_scenario(br#"{"version":1,"scenario_id":"00000000-0000-0000-0000-000000000000"}"#.as_slice(), E_NOTIMPL)]
+    #[case::missing_scenario(br#"{"version":1}"#.as_slice(), E_INVALIDARG)]
+    #[case::not_json(b"not json".as_slice(), E_INVALIDARG)]
+    fn invalid_requests_are_rejected(#[case] request: &[u8], #[case] hresult: u32) {
+        assert_eq!(parse_request(request), Err(hresult));
     }
 
-    // oracle: reference Windows App 2.0.1485.0 rdclientax.dll InteractiveRdsAadAuthClient data handler, which reports failures as error_code
+    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-client/PROTOCOL.interactive-entra-auth.md §Errors
     #[test]
     fn error_message_carries_the_hresult() {
         assert_eq!(error_message(E_ACCESSDENIED), br#"{"error_code":-2147024891}"#);
     }
 
-    // oracle: reference Windows App 2.0.1485.0 rdclientax.dll sub_1804AC650, which takes ServerAadDeviceId from the certificate's common name
+    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-client/PROTOCOL.interactive-entra-auth.md §Server certificate
     #[test]
     fn device_id_comes_from_the_common_name() {
         let certificates = certificates();
@@ -680,7 +633,7 @@ mod tests {
         assert_eq!(device_id_from_certificate(&certificates.leaf), Ok(DEVICE_ID.to_owned()));
     }
 
-    // oracle: reference Windows App 2.0.1485.0 rdclientax.dll CertHelper::ValidateAadP2PCertificate, which requires issuance by a tenant P2P root
+    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-client/PROTOCOL.interactive-entra-auth.md §Server certificate
     #[test]
     fn certificate_issued_by_a_p2p_root_is_accepted() {
         let certificates = certificates();
@@ -691,38 +644,30 @@ mod tests {
         assert_eq!(verify_server_certificate(&certificates.leaf, &roots, &now), Ok(()));
     }
 
-    // oracle: reference Windows App 2.0.1485.0 rdclientax.dll sub_1804ACF30, which fails with E_ACCESSDENIED
-    #[test]
-    fn other_certificates_are_refused() {
-        let certificates = certificates();
-        let in_validity = UtcDate::ymd(2026, 10, 28).expect("date");
-        let after_expiry = UtcDate::ymd(2031, 1, 1).expect("date");
-        let cases = [
-            ("no roots", Vec::new(), &in_validity),
-            ("unrelated root", vec![certificates.other_root.clone()], &in_validity),
-            ("expired", vec![certificates.root.clone()], &after_expiry),
-        ];
-
-        for (case, roots, now) in cases {
-            assert_eq!(
-                verify_server_certificate(&certificates.leaf, &roots, now),
-                Err(E_ACCESSDENIED),
-                "{case}"
-            );
-        }
+    // oracle: reference Windows App 2.0.1485.0 as recorded in crates/ironrdp-client/PROTOCOL.interactive-entra-auth.md §Server certificate, which fails with E_ACCESSDENIED
+    #[derive(Clone, Copy)]
+    enum Roots {
+        None,
+        Unrelated,
+        Issuer,
     }
 
-    // oracle: hand-computed calendar dates for these Unix times
-    #[test]
-    fn unix_time_converts_to_utc() {
-        let cases = [
-            ("epoch", 0, UtcDate::new(1970, 1, 1, 0, 0, 0)),
-            ("leap day", 951_825_600, UtcDate::new(2000, 2, 29, 12, 0, 0)),
-            ("end of 2026", 1_798_761_599, UtcDate::new(2026, 12, 31, 23, 59, 59)),
-        ];
+    #[rstest]
+    #[case::no_roots(Roots::None, (2026, 10, 28))]
+    #[case::unrelated_root(Roots::Unrelated, (2026, 10, 28))]
+    #[case::expired(Roots::Issuer, (2031, 1, 1))]
+    fn other_certificates_are_refused(#[case] roots: Roots, #[case] (year, month, day): (u16, u8, u8)) {
+        let certificates = certificates();
+        let now = UtcDate::ymd(year, month, day).expect("date");
+        let roots = match roots {
+            Roots::None => Vec::new(),
+            Roots::Unrelated => vec![certificates.other_root.clone()],
+            Roots::Issuer => vec![certificates.root.clone()],
+        };
 
-        for (case, unix_seconds, expected) in cases {
-            assert_eq!(utc_date(unix_seconds), expected, "{case}");
-        }
+        assert_eq!(
+            verify_server_certificate(&certificates.leaf, &roots, &now),
+            Err(E_ACCESSDENIED)
+        );
     }
 }

@@ -183,7 +183,9 @@ impl VersionRequestPdu {
 /// Virtual desktop control PDU.
 ///
 /// Every PDU starts with a 16-bit type and a 32-bit length that counts the whole PDU, header included.
-/// See [`PROTOCOL.md`](https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp-vdcswitch/PROTOCOL.md#pdus).
+/// See [the PDU table in `PROTOCOL.md`][pdus].
+///
+/// [pdus]: https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp-vdcswitch/PROTOCOL.md#pdus
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VdcSwitchPdu {
     /// Client to server: the versions and launch URI the client supports.
