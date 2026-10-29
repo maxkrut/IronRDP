@@ -219,7 +219,8 @@ impl OutputEventSender {
 
     /// Sends every event queued by [`Self::defer`] in order, each as [`Self::send_cancellable`] would.
     ///
-    /// Yields `Ok(false)` if `close_receiver` fires first; events not sent yet stay queued.
+    /// Yields `Ok(false)` if `close_receiver` fires first; events not sent yet, including the one waiting for room,
+    /// stay queued.
     pub(crate) async fn send_deferred(
         &self,
         close_receiver: &mut watch::Receiver<bool>,
@@ -228,8 +229,21 @@ impl OutputEventSender {
             let Some(event) = self.deferred.lock().expect("not poisoned").pop_front() else {
                 return Ok(true);
             };
-            if !self.send_cancellable(event, close_receiver).await? {
-                return Ok(false);
+            match Self::split(event) {
+                Ok(must_deliver) => {
+                    // Waiting for a permit rather than inside `send` keeps the event if the close wins.
+                    tokio::select! {
+                        permit = self.must_deliver.reserve() => match permit {
+                            Ok(permit) => permit.send(must_deliver),
+                            Err(_) => return Err(mpsc::error::SendError(must_deliver)),
+                        },
+                        _ = close_receiver.changed() => {
+                            self.deferred.lock().expect("not poisoned").push_front(must_deliver);
+                            return Ok(false);
+                        }
+                    }
+                }
+                Err(latest) => self.send_latest(latest),
             }
         }
     }

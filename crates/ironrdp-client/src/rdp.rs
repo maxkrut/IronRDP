@@ -7598,6 +7598,42 @@ mod tests {
         ));
     }
 
+    // oracle: mutant a cancelled flush dropping the event it was waiting to send (this client's choice)
+    #[cfg(feature = "w365")]
+    #[tokio::test]
+    async fn cancelled_deferred_flush_keeps_the_waiting_event() {
+        let (output_sender, mut output_receiver) = crate::output_channel::output_channel(1);
+        output_sender
+            .try_send(RdpOutputEvent::Connected)
+            .expect("the first output event fills the queue");
+        let (close_sender, mut close_receiver) = watch::channel(false);
+        let mut handler = ChannelEvents {
+            output_event_sender: output_sender.clone(),
+        };
+        handler.power_requests_changed(true);
+
+        let send = output_sender.send_deferred(&mut close_receiver);
+        let close = async {
+            tokio::task::yield_now().await;
+            close_sender.send_replace(true);
+        };
+        let (delivered, ()) = tokio::join!(send, close);
+        assert!(!delivered.expect("cancellation is not an output error"));
+
+        let (_close_sender, mut close_receiver) = watch::channel(false);
+        assert!(matches!(output_receiver.recv().await, Some(RdpOutputEvent::Connected)));
+        assert!(
+            output_sender
+                .send_deferred(&mut close_receiver)
+                .await
+                .expect("output channel is open")
+        );
+        assert!(matches!(
+            output_receiver.recv().await,
+            Some(RdpOutputEvent::PowerRequestsChanged { active: true })
+        ));
+    }
+
     #[cfg(all(feature = "sound", feature = "rdpdr"))]
     #[test]
     fn rdpsnd_backend_kind_prefers_playback_over_noop() {
